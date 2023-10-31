@@ -1,0 +1,8 @@
+results/*
+candidates/*
+hainline/*
+sonora_data/*
+sonora_model/*
+*.fits
+__pycache__/*
+sonora/*
