@@ -3,6 +3,7 @@ import numpy as np
 import astropy.units as u
 import astropy.constants as c
 import glob
+from typing import Tuple, List, Dict
 import os
 from tqdm import tqdm
 import shutil
@@ -15,6 +16,9 @@ import requests
 from joblib import Parallel, delayed
 import tarfile
 import gzip 
+import h5py as h5
+from numpy.lib.recfunctions import structured_to_unstructured
+
 bands = ["f090W", "f115W", "f150W", "f200W", "f277W","f335M", "f356W", "f410M", "f444W"]
 hst_bands = ["f435W", "f606W", "f814W", "f105W", "f125W", "f140W", "f160W"]
 miri_bands = ["f560W", "f770W", "f1000W", "f1130W", "f1280W", "f1500W", "f1800W", "f2100W", "f2550W"]
@@ -29,11 +33,15 @@ band_wavs = {"f435W": 4_340., 'f606W':5960, 'f814W':8073,  "f090W": 9_044.,
                     'f2550W':251515.99}
 
 band_wavs = {key: value * u.Angstrom for (key, value) in band_wavs.items()} # convert each individual value to Angstrom
+band_wavs_upper = {key.replace('f', 'F'): value for key, value in band_wavs.items()}
+band_wavs.update(band_wavs_upper)
 
 file_urls={'bobcat':["https://zenodo.org/records/5063476/files/spectra_m+0.0.tar.gz?download=1", "https://zenodo.org/records/5063476/files/spectra_m+0.5.tar.gz?download=1", "https://zenodo.org/records/5063476/files/spectra_m-0.5.tar.gz?download=1", "https://zenodo.org/records/5063476/files/spectra_m+0.0_co1.5_g1000nc.tar.gz?download=1", "https://zenodo.org/records/5063476/files/spectra_m+0.0_co0.5_g1000nc.tar.gz?download=1"],
            'cholla':["https://zenodo.org/records/4450269/files/spectra.tar.gz?download=1"],
-           'evolution_and_photometry':["https://zenodo.org/records/5063476/files/evolution_and_photometery.tar.gz?download=1"]}
-
+           'evolution_and_photometry':["https://zenodo.org/records/5063476/files/evolution_and_photometery.tar.gz?download=1"],
+           'elf_owl':['https://zenodo.org/records/12735103/files/spectra.zip?download=1'],
+           'diamondback':['https://zenodo.org/records/10385987/files/output_1300.0_1400.tar.gz?download=1', 'https://zenodo.org/records/10385987/files/output_1600.0_1800.tar.gz?download=1', 'https://zenodo.org/records/10385987/files/output_1900.0_2100.tar.gz?download=1', 'https://zenodo.org/records/10385987/files/output_2200.0_2400.tar.gz?download=1'],
+           'low-z':['https://dataverse.harvard.edu/api/access/datafile/4571308', 'https://dataverse.harvard.edu/api/access/datafile/4570758']}
 def setup_libraries(path='sonora_data/'):
     for library in ["bobcat", "cholla", "evolution_and_photometry"]:
         # Ensure the destination folder exists, or create it if not
@@ -79,34 +87,34 @@ def setup_libraries(path='sonora_data/'):
                 if file.endswith('.gz') and not Path(file[:-3]).is_file():
                     with gzip.open(file, 'rb') as f_in, open(file[:-3], 'wb') as f_out:
                         shutil.copyfileobj(f_in, f_out)
-                    
-
-def convolve_sed_v2(mags, wavs_um, filters, input='mag', base_path = '/nvme/scratch/work/tharvey/'):
+                        
+def convolve_sed_v2(mags, wavs_um, filters, input='mag'):
 
     mask = np.isfinite(mags) & np.isfinite(wavs_um)
+    len_wav = len(wavs_um)
     mags = mags[mask]
     wavs_um = wavs_um[mask]
 
-    #if len(wavs_um) < len_wav:
-        #print('Removed nans from input SED')
+    if len(wavs_um) < len_wav:
+        print('Removed nans from input SED')
     if len(mags) != len(wavs_um) != len(filters):
         print('Inputs are different lengths!')
     if type(wavs_um[0]) == float:
-        print('Assuming microns')
+        print('Assuming micronsss')
         wavs_um = [i*u.um for i in wavs_um]
 
     mag_band = []
     for filt in filters:
         if filt in bands:
-            path = f"{base_path}/jwst_filters/nircam/"
+            path = "/nvme/scratch/work/tharvey/jwst_filters/nircam/"
             unit = u.micron
             delimiter = ' '
         elif filt in hst_bands:
-            path = f"{base_path}/jwst_filters/hst/"
+            path = "/nvme/scratch/work/tharvey/jwst_filters/hst/"
             unit = u.angstrom
             delimiter = ' '
         elif filt in miri_bands:
-            path = f'{base_path}/jwst_filters/miri/'
+            path = '/nvme/scratch/work/tharvey/jwst_filters/miri/'
             unit = u.angstrom
             delimiter = ' '
         wav, trans = np.transpose(np.loadtxt(f"{path}F{filt[1:]}.dat", delimiter=delimiter, dtype=float, skiprows=1))
@@ -129,9 +137,10 @@ def convolve_sed_v2(mags, wavs_um, filters, input='mag', base_path = '/nvme/scra
         else:
             fluxes = mags_loop.to(u.Jy)
             trans_ob = trap_object(wavs_um_loop)
-            trans_int = np.trapz(trans, wav)
+            # Photon counting convention : flambda = int(transmission * flux * lambda) / int(transmission * lambda)
+            trans_int = np.trapz(trans*wav, wav)
             #print(trans_ob*fluxes, wavs_um_loop)
-            top_int = np.trapz(trans_ob * fluxes, wavs_um_loop)
+            top_int = np.trapz(trans_ob * fluxes * wavs_um_loop, wavs_um_loop)
             #print(top_int)
             flux = top_int / trans_int
             
@@ -144,13 +153,52 @@ def convolve_sed_v2(mags, wavs_um, filters, input='mag', base_path = '/nvme/scra
     return mag_band
 
 
+def build_sonora_template_grid(bands, model_versions=['bobcat', 'cholla'], sonora_path='/nvme/scratch/work/tharvey/brown_dwarfs/sonora_model/', overwrite=False, output_file_name = 'photometry_grid.hdf5'):
+    
+    exists = False
+    if os.path.isfile(sonora_path+output_file_name) and not overwrite:
+        exists = True
+        file = h5.read(path+output_file_name, 'r')
+        model_bands = file.attrs['bands']
+        # Check all bands are present
+        for band in bands:
+            if band not in model_bands:
+                exists = False
+    if exists:
+        print('Sonora template grid already exists. Skipping.')
+    else:
+        print('Building sonora template grid.')
+        
+    models_table = Table()
+    sonora_names = []
+
+    for model_version in model_versions:
+        sonora = Table.read(f'{sonora_path}/sonora_{model_version}.param', format='ascii', delimiter=' ', names=['num', 'path', 'scale'])
+        for pos, row in enumerate(sonora):
+            name = row["path"].split("/")[-1]
+
+            sonora_names.append(name)
+            table = Table.read(sonora_path+name, names=['wav', 'flux_nu'], format='ascii.ecsv', delimiter=' ', units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
+            table['flux_njy'] = table['flux_nu'].to(u.nJy)/1e17
+            convolved_fluxes = [i.value for i in convolve_sed_v2(table['flux_njy'], table['wav'].to(u.um), bands, input='flux')]
+            assert len(convolved_fluxes) == len(bands), f'Convolved fluxes and bands are different lengths: {len(convolved_fluxes)} and {len(bands)}'
+            flux_column = Column(convolved_fluxes, name=name, unit=u.nJy)
+            models_table.add_column(flux_column)
+
+    template_grid = models_table.as_array()
+
+    template_grid = structured_to_unstructured(template_grid, dtype=np.float32)
+
+    return template_grid
+        
+
 
 def fit_sonora(catalog_path=None, rerun=False, mixed_cat=False, model_version='bobcat',
                 sonora_path='/nvme/scratch/work/tharvey/brown_dwarfs/', id_col='#ID', 
                 fieldname_col='FIELDNAME', n_jobs=6, save_output=True, plot_all=False, 
                 plot=False, compare_galaxy_chi2=False, compare_galaxy_chi2_dif=4, 
                 absolute_chi2_good_fit=10, fwhm_band_size=4.84, size_compare_band='f444W',
-                force_fit=False):
+                force_fit=False, ignore_masked=False):
     '''
     Fits sonora brown dwarf templates to a catalog.
     
@@ -181,6 +229,7 @@ def fit_sonora(catalog_path=None, rerun=False, mixed_cat=False, model_version='b
         considered a point source. Default is 4.84 pixels.
     size_compare_band - string - band to use for size comparison. Default is f444W.
     force_fit - bool - whether to force fitting even if source is >> point source. Default is False.
+    ignore_masked - bool - whether to ignore masked fluxes for bands that are masked. Default is False.
 
     Returns:
 
@@ -218,13 +267,23 @@ def fit_sonora(catalog_path=None, rerun=False, mixed_cat=False, model_version='b
         for band in phot_bands_all:
             try:
                 flux = row[f'FLUX_APER_{band}_aper_corr_Jy']
-                if row[f'unmasked_{band}']:
+                if row[f'unmasked_{band}'] or ignore_masked:
                     if flux[0] < 1e15: # Avoids the merged 1e20 filler values
                         bands[row[id_col]].append(band)
                 if band not in bands_all:
                     bands_all.append(band)
             except KeyError as e:
-                pass
+                try:
+                    flux = row[f'FLUX_APER_{band.replace("f", "F")}_aper_corr_Jy']
+                    if row[f'unmasked_{band.replace("f", "F")}'] or ignore_masked:
+                        if flux[0] < 1e15: # Avoids the merged 1e20 filler values
+                            bands[row[id_col]].append(band.replace('f', 'F'))
+                            size_compare_band = size_compare_band.replace('f', 'F')
+                    if band not in bands_all:
+                        bands_all.append(band)
+                except KeyError as e:
+                    pass
+
     
     models_table = Table()
     models_table['band'] = bands_all
@@ -246,7 +305,7 @@ def fit_sonora(catalog_path=None, rerun=False, mixed_cat=False, model_version='b
 
     if f'best_template_sonora_{model_version}' not in catalog.colnames or rerun:
         print('Rerunning fitting.')
-        params = [(id, bands_id, catalog, id_col, models_table, sonora_names, band_wavs, bands_all, plot_all, plot, sonora_path,  fwhm_band_size, size_compare_band, force_fit, absolute_chi2_good_fit) for id, bands_id in bands.items()]
+        params = [(id, bands_id, catalog, id_col, models_table, sonora_names, band_wavs, bands_all, plot_all, plot, sonora_path, fwhm_band_size, size_compare_band, force_fit, absolute_chi2_good_fit) for id, bands_id in bands.items()]
         output = Parallel(n_jobs=n_jobs)(delayed(parallel_sonora_fitting)(param) for param in tqdm(params, desc='Fitting BD templates'))
         output = np.array(output)
         # Save results
@@ -346,7 +405,7 @@ def calculate_params(best_fit_model, normalization, sonora_path='sonora_model/',
 
 def parallel_sonora_fitting(params):
     id, bands_id, catalog, id_col, models_table, sonora_names, band_wavs, bands_all, plot_all, plot, sonora_path,  fwhm_band_size, size_compare_band, force_fit, absolute_chi2_good_fit = params
-
+    #print('Using bands: ', bands_id)
     if len(bands_id) == 0:
         #raise Exception(f'no bands found for {id}')
         pass #when running on full catalogue, some things are masked in all bands
@@ -366,10 +425,11 @@ def parallel_sonora_fitting(params):
         return ['No bands', -1, 0]
     consts = []
     fits = []
+    bands_id_lower = [band.replace('F', 'f') for band in bands_id]
 
     for sonora_name in sonora_names: 
-        models_mask = [pos for pos, band in enumerate(bands_all) if band in bands_id]
-        wavs = [band_wavs[band].value for band in bands_id]
+        models_mask = [pos for pos, band in enumerate(bands_all) if band in bands_id_lower]
+        wavs = [band_wavs[band].value for band in bands_id_lower]
         popt, pcov = curve_fit(lambda x, a: a * models_table[sonora_name][models_mask], wavs, flux, sigma=flux_err, p0=1e-4)
         const = popt[0]
         chi_squared = np.sum(((const * models_table[sonora_name][models_mask] - flux) / flux_err)**2)
@@ -387,7 +447,7 @@ def parallel_sonora_fitting(params):
         ax.plot(table['wav'], table['flux_njy'] * consts[best_fit], label=name, zorder=1)
         for band in bands_id:
             ax.errorbar(band_wavs[band], flux[bands_id.index(band)], yerr=flux_err[bands_id.index(band)], fmt='o', c = 'black', zorder=2)
-            ax.scatter(band_wavs[band], consts[best_fit] * models_table[name][models_table['band'] == band], label=name, marker='x', color='red', zorder=4)
+            ax.scatter(band_wavs[band], consts[best_fit] * models_table[name][models_table['band'] == band.replace('F', 'f')], label=name, marker='x', color='red', zorder=4)
             
         ax.set_xlabel('Wavelength (Angstrom)')
         ax.set_ylabel('Flux (nJy)')
@@ -506,32 +566,109 @@ def convert_sonora(path, model_version='bobcat'):
     return True
 
 
+def deduplicate_templates(
+    template_grid: np.ndarray,
+    tolerance: float = 0.01,
+    relative: bool = True
+) -> Tuple[np.ndarray, Dict[int, List[int]]]:
+    """
+    Remove duplicate templates from a grid based on photometric similarity.
+    
+    Args:
+        template_grid: numpy array of shape (N, M) where N is number of templates
+                      and M is number of photometric datapoints
+        tolerance: maximum allowed difference between templates to be considered duplicates
+        relative: if True, use relative differences (template1/template2 - 1),
+                 if False, use absolute differences
+    
+    Returns:
+        Tuple containing:
+        - Deduplicated template grid
+        - Dictionary mapping kept template indexes to lists of removed duplicate indexes
+    """
+    N, M = template_grid.shape
+    # Keep track of which templates to keep and their duplicates
+    to_keep = np.ones(N, dtype=bool)
+    duplicate_map = {}
+    
+    # Compare each template with all subsequent templates
+    for i in range(N):
+        if not to_keep[i]:
+            continue
+            
+        template1 = template_grid[i]
+        duplicates = []
+        
+        for j in range(i + 1, N):
+            if not to_keep[j]:
+                continue
+                
+            template2 = template_grid[j]
+            
+            # Calculate differences based on method
+            if relative:
+                # Avoid division by zero
+                safe_template2 = np.where(template2 != 0, template2, np.inf)
+                diffs = np.abs(template1/safe_template2 - 1)
+            else:
+                diffs = np.abs(template1 - template2)
+            
+            # Check if all differences are within tolerance
+            if np.all(diffs <= tolerance):
+                to_keep[j] = False
+                duplicates.append(j)
+        
+        if duplicates:
+            duplicate_map[i] = duplicates
+    
+    # Create deduplicated grid
+    deduplicated_grid = template_grid[to_keep]
+    
+    return deduplicated_grid, duplicate_map
+
+
 
 if __name__ == '__main__':
     # Run this the first time to download and unpack the sonora files
     setup_libraries('sonora_data/')
     
-    choose_sonora(model_version='cholla', overwrite=False)
-    choose_sonora(model_version='bobcat', overwrite=False)
+    #choose_sonora(model_version='cholla', overwrite=False)
+    #choose_sonora(model_version='bobcat', overwrite=False)
 
-    catalog_path  = '/nvme/scratch/work/tharvey/proposals/NEPAGN/NEP_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV_sonora'
-    catalog = Table.read(catalog_path+'.fits')
-    #Filter cat
-    catalog = catalog[(catalog['FLUX_RADIUS_f444W'] < 4.84) & (catalog['MAG_APER_f444W_aper_corr'][:, 0] < 28.5) & (catalog['unmasked_blank_NIRCam'] == True)]
+    #catalog_path  = '/nvme/scratch/work/tharvey/proposals/NEPAGN/NEP_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV_sonora'
+    #catalog_path = '/raid/scratch/work/austind/GALFIND_WORK/Catalogues/v9/ACS_WFC+NIRCam/Combined/CEERS_MASTER_Sel-f277W+f356W+f444W_v9_loc_depth_masked_10pc_EAZY_matched_selection_ext_src_UV_updated'
     
-    #catalog = catalog[catalog['selected_gal_all_criteria_delta_chi2_4_fsps_larson']== True]
-    #catalog_path = 'jades_hainline_matched'
-    model_versions = ['bobcat', 'cholla']
-    for model_version in model_versions:
-        rerun = True
-        if not Path(catalog_path+f'_sonora.fits').is_file() or rerun:
-            catalog = fit_sonora(catalog, mixed_cat=True, model_version=model_version, compare_galaxy_chi2='chi2_best_fsps_larson', save_output=False, plot_all=False, id_col='NUMBER', rerun=False)
-            #catalog.write(catalog_path+f'_sonora_{model_version}.fits', overwrite=True)
-            catalog.write(catalog_path+'_sonora.fits', overwrite=True)
+    paths = ['/raid/scratch/work/austind/GALFIND_WORK/Catalogues/v11/ACS_WFC+NIRCam/JOF/JOF_MASTER_Sel-F277W+F356W+F444W_v11.fits',
+            '/raid/scratch/work/austind/GALFIND_WORK/Catalogues/v9/NIRCam/JADES-Deep-GS+JEMS/JADES-Deep-GS+JEMS_MASTER_Sel-F277W+F356W+F444W_v9.fits']
 
+    for field in ['CEERS_3', 'NEP_4']:
+        print(f'Doing {field}')
+        catalog_path = f'/nvme/scratch/work/tharvey/catalogs/shay_bd_fitting/{field}_extras'
+        ext = '_zfree' if field in ['JADES'] else ''
+        catalog = Table.read(catalog_path+'.fits')
+
+        #Filter cat
+        #catalog = catalog[(catalog['FLUX_RADIUS_f444W'] < 4.84) & (catalog['MAG_APER_f444W_aper_corr'][:, 0] < 28.5) & (catalog['unmasked_blank_NIRCam'] == True)]
+        #catalog = catalog[catalog['FIELDNAME'] == 'CEERSP3']
+        #catalog = catalog[catalog['NUMBER'] == 246]
+        #catalog = catalog[catalog['selected_gal_all_criteria_delta_chi2_4_fsps_larson']== True]
+        #catalog_path = 'jades_hainline_matched'
+        model_versions = ['bobcat', 'cholla']
+        for model_version in model_versions:
+            rerun = True
+            if not Path(catalog_path+f'_sonora.fits').is_file() or rerun:
+                catalog = fit_sonora(catalog, mixed_cat=True if field in ['CEERS', 'NEP'] else False, model_version=model_version, compare_galaxy_chi2=f'chi2_best_fsps_larson{ext}' , save_output=False, plot_all=True, id_col='NUMBER', rerun=True, ignore_masked=True, force_fit= True)
+        
+        catalog.write(catalog_path+f'_sonora.fits', overwrite=True)
+                #catalog.write(catalog_path+'_sonora.fits', overwrite=True)
+            #catalog.write('/nvme/scratch/work/tharvey/catalogs/wang2023_bd_P3_246_sonora.fits', overwrite=True)
+            
     '''catalog = Table.read(catalog+f'_sonora_{model_version}.fits')
 
     for row in catalog[catalog[f'possible_brown_dwarf_compact_{model_version}']]:
         print(row['NUMBER'])
         calculate_params(row[f'best_template_sonora_{model_version}'], row[f'constant_best_sonora_{model_version}'], model_version=model_version, sonora_path='sonora_model/')
     '''
+
+    #catalog = Table.read(catalog_path)
+    #print(catalog.colnames)
