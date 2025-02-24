@@ -3,16 +3,16 @@ import numpy as np
 import astropy.units as u
 import astropy.constants as c
 import glob
-from typing import Tuple, List, Dict, Union
+from typing import Tuple, List, Dict, Union, Any, Iterator, Optional, Callable
 import re
 import operator
+import collections
 import os
 from tqdm import tqdm
 import shutil
 from pathlib import Path
 from matplotlib import pyplot as plt
-from specutils import Spectrum1D
-from specutils.manipulation import LinearInterpolatedResampler, FluxConservingResampler
+import spectres 
 from scipy.optimize import curve_fit
 import requests
 from joblib import Parallel, delayed
@@ -23,22 +23,60 @@ import h5py as h5
 from numpy.lib.recfunctions import structured_to_unstructured
 from astroquery.svo_fps import SvoFps
 import matplotlib.patheffects as pe
+from itertools import product
+
 
 
 # Path to download models - currently supports Sonora Bobcat, Cholla, Elf Owl, Diamondback and the Low-Z models
 file_urls={'sonora_bobcat':["https://zenodo.org/records/5063476/files/spectra_m+0.0.tar.gz?download=1", "https://zenodo.org/records/5063476/files/spectra_m+0.5.tar.gz?download=1", "https://zenodo.org/records/5063476/files/spectra_m-0.5.tar.gz?download=1", "https://zenodo.org/records/5063476/files/spectra_m+0.0_co1.5_g1000nc.tar.gz?download=1", "https://zenodo.org/records/5063476/files/spectra_m+0.0_co0.5_g1000nc.tar.gz?download=1"],
            'sonora_cholla':["https://zenodo.org/records/4450269/files/spectra.tar.gz?download=1"],
-           'sonora_evolution_and_photometry':["https://zenodo.org/records/5063476/files/evolution_and_photometery.tar.gz?download=1"],
            'sonora_diamondback':['https://zenodo.org/records/12735103/files/spectra.zip?download=1'],
            'sonora_elf_owl':['https://zenodo.org/records/10385987/files/output_1300.0_1400.tar.gz?download=1', 'https://zenodo.org/records/10385987/files/output_1600.0_1800.tar.gz?download=1', 'https://zenodo.org/records/10385987/files/output_1900.0_2100.tar.gz?download=1', 'https://zenodo.org/records/10385987/files/output_2200.0_2400.tar.gz?download=1', #Y-type
                             'https://zenodo.org/records/10385821/files/output_1000.0_1200.tar.gz?download=1', 'https://zenodo.org/records/10385821/files/output_575.0_650.tar.gz?download=1', 'https://zenodo.org/records/10385821/files/output_850.0_950.tar.gz?download=1', 'https://zenodo.org/records/10385821/files/output_700.0_800.tar.gz?download=1', # T-type
                             'https://zenodo.org/records/10381250/files/output_275.0_325.0.tar.gz?download=1', 'https://zenodo.org/records/10381250/files/output_350.0_400.0.tar.gz?download=1', 'https://zenodo.org/records/10381250/files/output_425.0_475.0.tar.gz?download=1', 'https://zenodo.org/records/10381250/files/output_500.0_550.0.tar.gz?download=1'], #L-type
            'low-z':['https://dataverse.harvard.edu/api/access/datafile/4571308', 'https://dataverse.harvard.edu/api/access/datafile/4570758']}
 
+evolution_tables = {'sonora_bobcat':["https://zenodo.org/records/5063476/files/evolution_and_photometery.tar.gz?download=1"],
+                    'sonora_diamondback':['https://zenodo.org/records/12735103/files/evolution.zip?download=1']}
+                    
 # Euclid bands
 # "Y", "Blue", "J", "Red", "H", "vis"
 # Euclid - NISP
 # Paranal - Vista - Z, Y, J, H, Ks
+
+
+model_parameters = {'sonora_bobcat':{
+            'temp':[200, 225, 250, 275, 300, 325, 350, 375, 400, 425, 450, 475, 500, 525, 550, 575, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400],
+            'log_g':[10, 17, 31, 56, 100, 178, 316, 562, 1000, 1780, 3160],
+            'met':['-0.5', '0.0', '+0.5'],
+            'co':['', 0.5, 1.5]}, 
+        'sonora_cholla':{
+            'temp':[500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1050, 1100, 1150, 1200, 1250, 1300],
+            'log_g':[31, 56, 100, 178, 316, 562, 1000, 1780, 3162],
+            'kzz':[2, 4, 7]},
+        'sonora_elf_owl':{
+            'temp':[275, 300, 325, 350, 375, 400, 425, 450, 475, 500, 525, 550, 575, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1050, 1100, 1150, 1200, 1250, 1300, 1350, 1400, 1450, 1500, 1550, 1600, 1650, 1700, 1750, 1800, 1850, 1900, 1950, 2000, 2050, 2100, 2150, 2200, 2250, 2300, 2350, 2400],
+            'log_g':[10.0, 17.0, 31.0, 56.0, 100.0, 178.0, 316.0, 562.0, 1000.0, 1780.0, 3160.0],
+            'met':[-0.5, -1.0, 0.0, 0.5, 0.7, 1.0],
+            'kzz':[2.0, 4.0, 7.0, 8.0, 9.0],
+            'co':[0.5, 1.0, 1.5, 2.0, 2.5]},
+        'sonora_diamondback':{ 
+            'temp':[900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400],
+            'log_g':[31, 100, 316, 1000, 3160],
+            'met':['-0.5', '0.0', '+0.5'],
+            'co':[1.0],
+            'f':['f1', 'f2', 'f3', 'f4', 'f8', 'nc']},
+        'low-z':{
+            'temp':[500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1100, 1200, 1300, 1400, 1500, 1600],
+            'log_g':[3.5, 4.0, 4.5, 5.0, 5.25, 6.0],
+            'met':['+1.0', '+0.75', '+0.25', '+0.5', '+0.0', '-2.5', '-2.0', '-1.5', '-1.0', '-0.25', '-0.5'],
+            'co':[0.85, 0.1, 0.55],
+            'kzz':[-1.0, 10.0, 2.0]},
+}
+
+# elf owl
+# The parameters included within this grid are effective temperature (Teff), gravity (log(g)), vertical eddy diffusion coefficient (log(Kzz)), atmospheric metallicity ([M/H]), and Carbon-to-Oxygen ratio (C/O).
+
 
 default_bands = ["ACS_WFC.F435W", "ACS_WFC.F475W", "ACS_WFC.F606W", "ACS_WFC.F625W", "ACS_WFC.F775W", "ACS_WFC.F814W", "ACS_WFC.F850LP", 
                 "F070W", "F090W", "WFC3_IR.F105W", "WFC3_IR.F110W", "F115W", "WFC3_IR.F125W", "F150W", 
@@ -54,8 +92,8 @@ code_dir = os.path.dirname(os.path.abspath(__file__))
 
 class StarFit:
     def __init__(self, library_path='internal', libraries = ["sonora_bobcat", "sonora_cholla", "sonora_elf_owl", 'sonora_diamondback', 'low-z'], compile_bands='default',
-                facilities_to_search={"JWST": ["NIRCam", "MIRI"], "HST": ["ACS", "WFC3"], "Euclid":["NISP", "VIS"], "Paranal":["VIRCAM"]}, resample_step=50, constant_R=False, R=500, min_wav=0.3 * u.micron, 
-                max_wav=10 * u.micron, scaling_factor=1e-22):
+                facilities_to_search={"JWST": ["NIRCam", "MIRI"], "HST": ["ACS", "WFC3"], "Euclid":["NISP", "VIS"], "Paranal":["VIRCAM"]}, resample_step=50, constant_R=True, R=300, min_wav=0.3 * u.micron, 
+                max_wav=12 * u.micron, scaling_factor=1e-22, verbose=False):
 
         '''
 
@@ -84,7 +122,7 @@ class StarFit:
         '''
 
         if library_path == 'internal':
-            self.library_path = os.path.dirname(os.path.dirname(code_dir)) + '/models/'
+            self.library_path = os.path.dirname(os.path.dirname(code_dir)) + '/models'
         else:
             self.library_path = library_path   
 
@@ -98,6 +136,8 @@ class StarFit:
         self.filter_instruments = {}
         self.transmission_profiles = {}
         self.facilities_to_search = facilities_to_search
+        self.model_parameters = model_parameters
+        self.verbose = verbose
 
         self.resample_step = resample_step 
         self.constant_R = constant_R
@@ -120,11 +160,10 @@ class StarFit:
         for library in libraries:
             if not os.path.exists(f"{self.library_path}/{library}_photometry_grid.hdf5"):
                 print(f'Compiled {library} photometry not found.')
-                if not os.path.exists(f'{self.library_path}/{library}.param'):
+                if not os.path.exists(f'{self.library_path}/{library}/'): 
                     print(f'No {library} models found. Running setup_libraries.')
                     self.setup_libraries(self.library_path, [library])
-                    self.convert_templates(self.library_path, library)
-                
+                self.convert_templates(self.library_path, library)
                 self.build_template_grid(self.model_filters, model_versions=[library], model_path=self.library_path)
             
             self._load_template_grid(self.library_path, library)
@@ -132,6 +171,9 @@ class StarFit:
         self.combined_libraries = None
 
         self._build_combined_template_grid(libraries)
+
+        print(f'Total models: {len(self.combined_template_grid.T)}')
+
 
 
     def _load_template_grid(self, library_path, library):
@@ -143,6 +185,7 @@ class StarFit:
             except KeyError:
                 if 'names' in file.keys():
                     self.template_names[library] = list(file['names'][:])
+                    self.template_names[library] = [i.decode('utf-8') for i in self.template_names[library]]
                 else:
                     file.close()
                     self._fix_names(library, model_path=library_path)
@@ -163,7 +206,7 @@ class StarFit:
         for library in libraries:
             assert set(self.model_filters).issubset(self.template_bands[library]), f"Model filters not found in {library} template bands."
             idxs[library] = np.array([self.template_bands[library].index(band) for band in self.model_filters])
-            assert len(model_filters) == len(idxs[library]), f"Model filters and idxs are different lengths: {len(model_filters)} and {len(idxs[library])}"
+            assert len(self.model_filters) == len(idxs[library]), f"Model filters and idxs are different lengths: {len(model_filters)} and {len(idxs[library])}"
         # get the template grid for each library
         template_grids = [self.template_grids[library] for library in libraries]
         idxs_order = [idxs[library] for library in libraries]
@@ -181,6 +224,10 @@ class StarFit:
 
         return self.combined_template_grid
         
+    def _type_from_temp(self, temp):
+        # From Sonora Elf Owl
+        temp_range = {'Y':(275, 550), 'T':(575, 1200), 'L':(1300, 2400)}
+
 
 
     def setup_libraries(self, path='sonora_data/', libraries = ["sonora_bobcat", "sonora_cholla", "sonora_evolution_and_photometry"]):
@@ -299,7 +346,7 @@ class StarFit:
         return mag_band
     
     def _fix_names(self, model_version, model_path='/nvme/scratch/work/tharvey/brown_dwarfs/models/', output_file_name='photometry_grid.hdf5'):
-        model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['num', 'path', 'scale'])
+        model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['path'])
         assert len(model_table) > 0, f'No models found in {model_version}.param. Maybe remove the file and try again.'
 
         names = []
@@ -309,7 +356,7 @@ class StarFit:
 
         model_file_name = f'{model_version}_{output_file_name}'
             
-        with h5.File(model_path+model_file_name, 'a') as file:    
+        with h5.File(f'{model_path}/{model_file_name}', 'a') as file:    
             try:
                 file.attrs['names'] = names
             except RuntimeError:
@@ -324,9 +371,9 @@ class StarFit:
         for model_version in model_versions:
             model_file_name = f'{model_version}_{output_file_name}'
             
-            if os.path.isfile(model_path+model_file_name) and not overwrite:
+            if os.path.isfile(f'{model_path}/{model_file_name}') and not overwrite:
                 exists = True
-                file = h5.File(model_path+model_file_name, 'r')
+                file = h5.File(f'{model_path}/{model_file_name}', 'r')
                 model_bands = file.attrs['bands']
                 file.close()
 
@@ -336,25 +383,43 @@ class StarFit:
                         exists = False
             if exists:
                 print(f'{model_version} template grid already exists. Skipping.')
-            else:
-                print(f'Building {model_version} template grid.')
             
             models_table = Table()
             names = []
         
-            model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['num', 'path', 'scale'])
+            model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['path'])
             assert len(model_table) > 0, f'No models found in {model_version}.param. Maybe remove the file and try again.'
-
+            metas = {}
             for pos, row in tqdm(enumerate(model_table), total=len(model_table), desc=f'Building {model_version} template grid'):
                 name = row["path"].split("/")[-1]
-
+                
                 names.append(name)
                 table = Table.read(f'{model_path}/{row["path"]}', names=['wav', 'flux_nu'], format='ascii.ecsv', delimiter=' ', units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
                 table['flux_njy'] = table['flux_nu'].to(u.nJy)*self.scaling_factor
+
+                meta_keys_tab = table.meta.keys()
+                for key in meta_keys_tab:
+                    if key not in metas.keys():
+                        metas[key] = []
+                        if pos > 0:
+                            metas[key] = [np.nan]*pos
+
                 convolved_fluxes = [i.value for i in self._convolve_sed(table['flux_njy'], table['wav'].to(u.um), bands, input='flux')]
                 assert len(convolved_fluxes) == len(bands), f'Convolved fluxes and bands are different lengths: {len(convolved_fluxes)} and {len(bands)}'
                 flux_column = Column(convolved_fluxes, name=name, unit=u.nJy)
+                
+                for key in metas.keys():
+                    if key in meta_keys_tab:
+                        metas[key].append(table.meta[key])
+                    else:
+                        metas[key].append(np.nan)
+
                 models_table.add_column(flux_column)
+
+            for key in metas.keys():
+                if any([isinstance(i, str) for i in metas[key]]):
+                    metas[key] = [str(i) for i in metas[key]]
+            #metas = np.array(metas)
 
             template_grid = models_table.as_array()
 
@@ -363,7 +428,7 @@ class StarFit:
             if not os.path.exists(model_path):
                 os.makedirs(model_path)
 
-            with h5.File(model_path+model_file_name, 'w') as file:    
+            with h5.File(f'{model_path}/{model_file_name}', 'w') as file:    
                 file.create_dataset('template_grid', data=template_grid, compression='gzip')
                 file.attrs['bands'] = bands
                 file.attrs['scale'] = self.scaling_factor
@@ -372,6 +437,10 @@ class StarFit:
                 except RuntimeError:
                     print('Failed to save names. Likely too long.')
                     file.create_dataset('names', data=names)
+                # Stores meta for dataset - temperature, log_g, met, etc. Useful for filtering models, calculating distances, etc.
+                file.create_group('meta')
+                for key in metas.keys():
+                    file['meta'][key] = metas[key]
 
         return template_grid, names
 
@@ -533,180 +602,242 @@ class StarFit:
 
                 self.transmission_profiles[band] = (wav, trans)
 
+    def model_parameter_ranges(self, model_version='sonora_bobcat'):
+        return self.model_parameters[model_version]
+    
+    def model_file_extensions(self, model_version='sonora_bobcat'):
+        model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt'}
+        
+        return model_ext[model_version]
+
+    def _latex_label(self, param):
+        self.latex_labels = { 'temp': r'$T_{\rm eff}$', 'log_g': r'$\log g$', 'met': r'$\rm [Fe/H]$', 'kzz': r'$\rm K_{zz}$', 'co': r'$\rm C/O$', 'f':r'$\rm fsed'}
+        return self.latex_labels[param]
+
+    def param_unit(self, param):
+        self.units = {'temp': u.K, 'log_g': u.m/u.s**2, 'met': u.dimensionless_unscaled, 'kzz': u.dimensionless_unscaled, 'co': u.dimensionless_unscaled, 'f':u.dimensionless_unscaled}
+        return self.units[param]
+
     def convert_templates(self, out_folder='sonora_model/', model_version='bobcat', overwrite=False):
-        if model_version == 'sonora_bobcat':
-            temp = [200, 225, 250, 275, 300, 325, 350, 375, 400, 425, 450, 475, 500, 525, 550, 575, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400]
-            log_gs = [10, 17, 31, 56, 100, 178, 316, 562, 1000, 1780, 3160]
-            m = ['-0.5', '0.0', '+0.5']
-            npermutations = len(temp) * len(log_gs) * len(m)
-        elif model_version == 'sonora_cholla':
-            temp = [500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1050, 1100, 1150, 1200, 1250, 1300]
-            log_gs = [31, 56, 100, 178, 316, 562, 1000, 1780, 3162]
-            kzzs = [2, 4, 7]
-            npermutations = len(temp) * len(log_gs) * len(kzzs)
-        elif model_version == 'sonora_elf_owl':
-            temp = [275, 300, 325, 350, 375, 400, 425, 450, 475, 500, 525, 550, 575, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1050, 1100, 1150, 1200, 1250, 1300, 1350, 1400, 1450, 1500, 1550, 1600, 1650, 1700, 1750, 1800, 1850, 1900, 1950, 2000, 2050, 2100, 2150, 2200, 2250, 2300, 2350, 2400]
-            log_gs = [17.0, 31.0, 56.0, 100.0, 178.0, 316.0, 562.0, 1000.0, 1780.0, 3160.0]
-            mhs =  [-0.5, -1.0, 0.0, 0.5, 0.7, 1.0]
-            kzzs = [2.0, 4.0, 7.0, 8.0, 9.0]
-            cos = [0.5, 1.0, 1.5, 2.5]
-            npermutations = len(temp) * len(log_gs) * len(mhs) * len(kzzs) * len(cos)
-        elif model_version == 'sonora_diamondback':
-            temp = [900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400]
-            log_gs = [31, 100, 316, 1000, 3160]
-            ms = ['-0.5', '0.0', '+0.5']
-            cos = [1.0]
-            fs = ['f1', 'f2', 'f3', 'f4', 'f8', 'nc']
-            npermutations = len(temp) * len(log_gs) * len(ms) * len(cos) * len(fs)
-        elif model_version == 'low-z':
-            log_gs = [3.5, 4.0, 4.5, 5.0, 5.25, 6.0]
-            temp = [500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1100, 1200, 1300, 1400, 1500, 1600]
-            log_Zs = ['+1.0', '+0.75', '+0.25', '+0.5', '+0.0', '-2.5', '-2.0', '-1.5', '-1.0', '-0.25', '-0.5']
-            cos = [0.85, 0.1, 0.55]
-            kzzs = [-1.0, 10.0, 2.0]
-            npermutations = len(log_gs) * len(temp) * len(log_Zs) * len(cos) * len(kzzs)
-
-        count = 1
-        if Path(out_folder+f'{model_version}.param').is_file() and not overwrite:
-            print('Sonora param file already exists. Skipping.')
-            return
         
-        try:
-            with open(out_folder+f'{model_version}.param', 'w') as f:
-                print(f'Total models: ~{npermutations}')
-                for temp in tqdm(temp, desc=f'Converting {model_version} models'):
-                    for log_g in log_gs:
-                        if model_version == 'sonora_bobcat':
-                            for metallicity in m:
-                                
-                                mname = f'_m+{metallicity}/spectra' if metallicity == '0.0' else f'_m{metallicity}'
-                                
-                                path = f'{self.library_path}/{model_version}/spectra{mname}'
-                                name = f'sp_t{temp}g{log_g}nc_m{metallicity}.dat'
-                                name_new = f'sp_t{temp}g{log_g}nc_m{metallicity}_resample.dat'
-                                if not Path(f'{out_folder}/{model_version}/{name_new}').is_file() or overwrite:
-                                    done = self._resample_model(f'{path}/{name[:-4]}', model_version=model_version)
-                                    if not done:
-                                        print(f'Failed {name}')
-                                        continue 
-                                    shutil.copyfile(f'{path}/{name_new}', f'{out_folder}/{model_version}/{name_new}')
-                                f.writelines(f'{count} {model_version}/{name_new} 1.0\n')
-                                count += 1
-                                # The special C/O ratio files
-                                if log_g == 1000 and metallicity == '0.0':
-                                    for co in [0.5, 1.5]:
-                                        mname = f"_m+{metallicity}_co{co}_g{log_g}nc"
-                                        path = f'{self.library_path}/{model_version}/spectra{mname}'
-                                        name = f'sp_t{temp}g{log_g}nc_m+{metallicity}_co{co}.dat'
-                                        name_new = f'sp_t{temp}g{log_g}nc_m+{metallicity}_co{co}_resample.dat'
-                                        if not Path(f'{out_folder}/{model_version}/{name_new}').is_file() or overwrite:
-                                            done = self._resample_model(f'{path}/{name[:-4]}', model_version=model_version)
-                                            if not done:
-                                                continue 
-                                            shutil.copyfile(f'{path}/{name_new}', f'{out_folder}/{model_version}/{name_new}')
-                                        f.writelines(f'{count} {out_folder}/{model_version}/{name_new} 1.0\n')
-                                        count += 1
-                        elif model_version == 'sonora_cholla':
-                            for kzz in kzzs:
-                                name = f'{temp}K_{log_g}g_logkzz{kzz}.spec'
-                                path = f'{self.library}/{model_version}/spectra/spectra_files/'
-                                name_new = f'{temp}K_{log_g}g_logkzz{kzz}_resample.dat'
-                                if not Path(f'{out_folder}/{model_version}/{name_new}').is_file() or overwrite:
-                                    done = self._resample_model(f'{path}/{name[:-5]}', model_version=model_version)
-                                    
-                                    if not done:
-                                        continue 
-                                    shutil.copyfile(f'{path}/{name_new}', f'{out_folder}/{model_version}/{name_new}')
-                                f.writelines(f'{count} {model_version}/{name_new} 1.0\n')
-                                count += 1
-                        elif model_version == 'sonora_elf_owl':
-                            for mh in mhs:
-                                for co in cos:
-                                    for kzz in kzzs:
-                                        possible_files = os.listdir(f'{self.library_path}/{model_version}/')
-                                        possible_files = [i for i in possible_files if os.path.isdir(f'{self.library_path}/{model_version}/{i}')]
-                                        options = [(float(i.split('_')[1]), float(i.split('_')[2])) for i in possible_files]
-                                        for i in options:
-                                            if temp >= i[0] and temp <= i[1]:
-                                                temp_low, temp_high = i
-                                                break
+        model_parameter_ext = self.model_file_extensions(model_version)
 
-                                        path = f'{self.library_path}/{model_version}/output_{temp_low}_{temp_high}/'
-                                        name = f'spectra_logzz_{kzz}_teff_{float(temp)}_grav_{log_g}_mh_{mh}_co_{float(co)}.nc'
-                                        name_new = f'spectra_logzz_{kzz}_teff_{float(temp)}_grav_{log_g}_mh_{mh}_co_{float(co)}_resample.dat'
-                                        if not Path(f'{out_folder}/{model_version}/{name_new}').is_file() or overwrite:
-                                            done = self._resample_model(f'{path}/{name[:-3]}', model_version=model_version)
-                                            if not done:
-                                                continue
-                                            shutil.copyfile(f'{path}/{name_new}', f'{out_folder}/{model_version}/{name_new}')
-                                        f.writelines(f'{count} {model_version}/{name_new} 1.0\n')
-                                        count += 1           
-                        elif model_version == 'sonora_diamondback':
-                            for m in ms:
-                                for co in cos:
-                                    for fi in fs:
-                                        name = f't{temp}g{log_g}{fi}_m{m}_co{co}.spec'
-                                        path = f'{self.library_path}/{model_version}/spec/spectra/'
-                                        name_new = f't{temp}g{log_g}{fi}_m{m}_co{co}_resample.dat'
-                                        if not Path(f'{path}/{name_new}').is_file() or overwrite:
-                                            done = self._resample_model(f'{path}/{name[:-5]}', model_version=model_version)
-                                            if not done:
-                                                continue
-                                            shutil.copyfile(f'{path}/{name_new}', f'{out_folder}/{model_version}/{name_new}')
-                                        f.writelines(f'{count} {model_version}/{name_new} 1.0\n')
-                                        count += 1
-                        elif model_version == 'low-z':
-                            for log_Z in log_Zs:
-                                for co in cos:
-                                    for kzz in kzzs:
-                                        name = f'LOW_Z_BD_GRID_CLEAR_Teff_{float(temp)}_logg_{float(log_g)}_logZ_{log_Z}_CtoO_{co}_logKzz_{kzz}_spec.txt'
-                                        path = f'{self.library_path}/{model_version}/models/models/'
-                                        name_new = name[:-4]+'_resample.dat'
-                                        if not Path(f'{path}/{name_new}').is_file() or overwrite:
-                                            done = self._resample_model(f'{path}/{name[:-4]}', model_version=model_version, resample=False)
-                                            if not done:
-                                                continue
-                                            shutil.copyfile(f'{path}/{name_new}', f'{out_folder}/{model_version}/{name_new}')
-                                        f.writelines(f'{count} {model_version}/{name_new} 1.0\n')
-                                        count += 1
-        except Exception as e:
-            if os.path.exists(out_folder+f'{model_version}.param'):
-                os.remove(out_folder+f'{model_version}.param')
-
-            raise e
+        # Count the number of models to convert with extension recurisvely in the file system
+        resampled_files = glob.glob(f'{out_folder}/{model_version}/resampled/*_resample.dat', recursive=True)
+        all_files = glob.glob(f'{self.library_path}/{model_version}/**/*{model_parameter_ext}', recursive=True)
+        files_to_ignore = ['parameter']
+        all_files = [file for file in all_files if not any([i in file for i in files_to_ignore])]
         
-        assert count > 1, 'No models found. Check pathing.'
+        all_files = [file for file in all_files if '_resample' not in file]
+        all_files = [file for file in all_files if '.gz' not in file and '.tar' not in file and '.zip' not in file]
+        all_files = [file for file in all_files if Path(file).is_file()]
+        all_file_names = [file.split('/')[-1] for file in all_files]
+        npermutations = len(all_files)
+        
+        print(f'Total resampled files: {len(resampled_files)}, Left to convert: {np.max([npermutations - len(resampled_files), 0])}')
+
+        count = 0
+        processed_files = []
+        if os.path.exists(f'{out_folder}/{model_version}.param') and not overwrite:
+            # count the number of models already converted
+            with open(f'{out_folder}/{model_version}.param', 'r') as f:
+                lines = f.readlines()
+                count = len(lines)
+                print(f'Already converted: {count} models.')
+                processed_files = [i.strip() for i in lines]
+
+
+        if count >= npermutations:
+            return 
+
+        if model_version == 'sonora_elf_owl':
+            # Working out folder name
+            possible_files = os.listdir(f'{self.library_path}/{model_version}/')
+            possible_files = [i for i in possible_files if os.path.isdir(f'{self.library_path}/{model_version}/{i}')]
+            possible_files = [i for i in possible_files if 'resampled' not in i]
+            options = [(float(i.split('_')[1]), float(i.split('_')[2])) for i in possible_files]
+
+        if not os.path.exists(f'{out_folder}/{model_version}/resampled/'):
+            os.makedirs(f'{out_folder}/{model_version}/resampled/')
+
+        with open(f'{out_folder}/{model_version}.param', 'a') as f:
+            for _, params in tqdm(iterate_model_parameters(self.model_parameters, model_version), total=npermutations, desc=f'Converting {model_version} models'):
+
+                temp = params['temp']
+                log_g = params['log_g']
+
+                if model_version == 'sonora_bobcat':
+                    m = params['met']
+                    co = params['co']
+                    mname = f'_m+{m}/spectra/' if m == '0.0' and co == '' else f'_m{m}'
+                    mname = f'_m+{m}' if co != '' else mname
+                    
+                    co_name = f'_co{co}' if co != '' else ''
+                    co_folder_name = f'{co_name}_g1000nc' if co != '' else ''
+                    m = f'+{m}' if co != '' and m == '0.0' else m
+                    path = f'{self.library_path}/{model_version}/spectra{mname}{co_folder_name}/'
+
+                    name = f'sp_t{temp}g{log_g}nc_m{m}{co_name}'
+                    name_new = f'sp_t{temp}g{log_g}nc_m{m}{co_name}_resample.dat'
+
+                    if f'{model_version}/resampled/{name_new}' in processed_files:
+                        all_file_names.remove(name)
+                        continue
+
+                    #else:
+                    #    print(f'/spectra{mname}{co_folder_name}/{name}')
+                    
+                    new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
+                    if not Path(new_path).is_file() or overwrite:
+                        result = self._resample_model(f'{path}/{name}', model_version=model_version, meta=params, new_path=new_path)
+                        if result == 'no overlap':
+                            all_file_names.remove(name)
+                            continue
+                        if not result:
+                            continue 
+                                             
+                elif model_version == 'sonora_cholla':
+                    kzz = params['kzz']
+                    name = f'{temp}K_{log_g}g_logkzz{kzz}.spec'
+                    path = f'{self.library_path}/{model_version}/spectra/spectra_files/'
+                    name_new = f'{temp}K_{log_g}g_logkzz{kzz}_resample.dat'
+
+                    if f'{model_version}/resampled/{name_new}' in processed_files:
+                        all_file_names.remove(name)
+                        continue
+                    
+                    new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
+
+                    if not Path(new_path).is_file() or overwrite:
+                        result = self._resample_model(f'{path}/{name}', model_version=model_version, meta=params, new_path=new_path)
+                        if result == 'no overlap':
+                            all_file_names.remove(name)
+                            continue
+                        if not result:
+                            continue
+                   
+                elif model_version == 'sonora_elf_owl':
+                    m = params['met']
+                    co = params['co']
+                    kzz = params['kzz']
+                    
+                    for i in options:
+                        if temp >= i[0] and temp <= i[1]:
+                            temp_low, temp_high = i
+                            if temp_high> 550: # i hate inconsistent file naming
+                                temp_high = int(temp_high)
+                            break
+
+                    path = f'{self.library_path}/{model_version}/output_{temp_low}_{temp_high}/'
+                    name = f'spectra_logzz_{kzz}_teff_{float(temp)}_grav_{log_g}_mh_{m}_co_{float(co)}.nc'
+                    name_new = f'spectra_logzz_{kzz}_teff_{float(temp)}_grav_{log_g}_mh_{m}_co_{float(co)}_resample.dat'
+                    new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
+                        
+                    if f'{model_version}/resampled/{name_new}' in processed_files:
+                        all_file_names.remove(name)
+                        continue
+
+                    if not Path(new_path).is_file() or overwrite:
+                        result = self._resample_model(f'{path}/{name}', model_version=model_version, meta=params, new_path=new_path)
+                        if result == 'no overlap':
+                            all_file_names.remove(name)
+                            continue
+                        if not result:
+                            continue
+                            
+
+                elif model_version == 'sonora_diamondback':
+                    m = params['met']
+                    co = params['co']
+                    fi = params['f']
+
+                
+                    name = f't{temp}g{log_g}{fi}_m{m}_co{co}.spec'
+                    path = f'{self.library_path}/{model_version}/spec/spectra/'
+                    name_new = f't{temp}g{log_g}{fi}_m{m}_co{co}_resample.dat'
+                    new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
+
+                    if f'{model_version}/resampled/{name_new}' in processed_files:
+                        all_file_names.remove(name)
+                        continue
+
+                    if not Path(new_path).is_file() or overwrite:
+                        result = self._resample_model(f'{path}/{name}', model_version=model_version, meta=params, new_path=new_path)
+                        if result == 'no overlap':
+                            all_file_names.remove(name)
+                            continue
+                        if not result:
+                            continue
+
+                elif model_version == 'low-z':
+                    m = params['met']
+                    co = params['co']
+                    kzz = params['kzz']
+                    name = f'LOW_Z_BD_GRID_CLEAR_Teff_{float(temp)}_logg_{float(log_g)}_logZ_{m}_CtoO_{co}_logKzz_{kzz}_spec.txt'
+                    path = f'{self.library_path}/{model_version}/models/models/'
+                    name_new = name[:-4]+'_resample.dat'
+
+                    if f'{model_version}/resampled/{name_new}' in processed_files:
+                        all_file_names.remove(name)
+                        continue
+
+                    new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
+                    if not Path(new_path).is_file() or overwrite:
+                        result = self._resample_model(f'{path}/{name}', model_version=model_version, resample=False, meta=params, new_path=new_path)
+                        if result == 'no overlap':
+                            all_file_names.remove(name)
+                            continue
+                        if not result:
+                            print('no result')
+                            continue
+                        print(result)
+                                       
+                else:
+                    raise Exception(f'Unknown model version: {model_version}')
+                
+                if f'{model_version}/resampled/{name_new}' not in processed_files:
+                    f.writelines(f'{model_version}/resampled/{name_new}\n')
+                all_file_names.remove(name)
+                count += 1
+        
+        if len(all_file_names) > 0:
+            for file in all_file_names:
+                if self.verbose:
+                    print('Failed to convert:', file)
+
+        assert len(all_file_names) == 0, f'Failed to convert {len(all_file_names)} models.'
+
+    def clear_resampled_models(self, model_version='sonora_bobcat'):
+        model_file_ext = self.model_file_extensions(model_version)
+        resampled_files = glob.glob(f'{self.library_path}/{model_version}/**/*_resample.dat', recursive=True)
+        for file in resampled_files:
+            os.remove(file)
             
-    def _resample_model(self, path, model_version, resample=True):
+    def _resample_model(self, path, model_version, resample=True, meta={}, new_path=''):
         try:
             if model_version == 'sonora_bobcat':
                 with(open(path, 'r')) as f:
-                    header = f.readlines()[0]
                     table = Table.read(path, format='ascii', data_start=2, header_start=None, guess=False, fast_reader=False, names=['microns', 'Flux (erg/cm^2/s/Hz)'], units=[u.micron, u.erg/(u.cm**2*u.s*u.Hz)])
             elif model_version == 'sonora_cholla':
-                table = Table.read(path+'.spec', format='ascii', data_start=2, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
+                table = Table.read(path, format='ascii', data_start=2, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
                 table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
-                header = ''
             elif model_version == 'sonora_elf_owl':
                 import xarray
-                ds = xarray.load_dataset(path+'.nc')
+                ds = xarray.load_dataset(path)
                 wav = ds['wavelength'].data * u.micron
                 flux = ds['flux'].data * u.erg/u.cm**2/u.s/u.cm # erg/cm^2/s/cm 
                 flux = flux.to(u.erg/u.cm**2/u.s/u.Hz, equivalencies=u.spectral_density(wav))
                 wav = wav.to(u.micron)
                 table = Table([wav, flux], names=['microns', 'Flux (erg/cm^2/s/Hz)'])
-                header = ''
             elif model_version == 'sonora_diamondback':
-                table = Table.read(path+'.spec', format='ascii', data_start=3, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
+                table = Table.read(path, format='ascii', data_start=3, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
                 table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
-                header = ''
             elif model_version == 'low-z':
-                table = Table.read(path+'.txt', format='ascii', data_start=1, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
+                table = Table.read(path, format='ascii', data_start=1, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
                 table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
-                header = ''
-
         except FileNotFoundError as e:
-            #print(e)
+            #if self.verbose:
+            #print(f'File not found: {path}')
             return False
         
         table['wav'] = table['microns'].to(u.AA)
@@ -714,37 +845,51 @@ class StarFit:
         table_order = table['wav', 'Flux (erg/cm^2/s/Hz)']
         table_order = table_order[(table['wav'] > self.min_wav) & (table['wav'] < self.max_wav)]
         if len(table_order) == 0:
-            return False
+            if self.verbose:
+                print('No overlap with filter range.')
+            return 'no overlap'
             
 
-        spec = Spectrum1D(spectral_axis=u.Quantity(table_order['wav']), flux=u.Quantity(table_order['Flux (erg/cm^2/s/Hz)']))
         new_table = Table()
         
         if resample:
-            resample = FluxConservingResampler()
             if self.constant_R:
-                new_disp_grid = self._generate_wav_sampling([table_order['wav'].max()]) * u.AA
+                new_disp_grid = self._generate_wav_sampling([table_order['wav'].max()], table_order['wav'].min()) * u.AA
             else:
                 new_disp_grid = np.arange(table_order['wav'].min(), table_order['wav'].max(), self.resample_step) * u.AA
-            new_spec = resample(spec, new_disp_grid)
-            new_table['wav'] = new_spec.spectral_axis
-            new_table['flux_nu'] = new_spec.flux
-        else:
-            new_table['wav'] = spec.spectral_axis
-            new_table['flux_nu'] = spec.flux
+    
+            fluxes = spectres.spectres(new_disp_grid.to(u.AA).value, table_order['wav'].to(u.AA).value, table_order['Flux (erg/cm^2/s/Hz)'].value, fill=0, verbose=False)
 
-        header = [i.replace(',', '') for i in header.split(' ') if i not in ['', '\n', ' ', '(MKS),']]
-        new_table.meta = {header[i+len(header)//2]:header[i] for i in range(len(header)//2)}
-        new_table.write(path+'_resample.dat', format='ascii.ecsv', overwrite=True)
+            new_table['wav'] = new_disp_grid 
+            new_table['flux_nu'] = fluxes * u.erg/(u.cm**2*u.s*u.Hz)
+
+        else:
+            new_table['wav'] = table_order['wav']
+            new_table['flux_nu'] = table_order['Flux (erg/cm^2/s/Hz)']
+
+        #header = [i.replace(',', '') for i in header.split(' ') if i not in ['', '\n', ' ', '(MKS),']]
+        #new_table.meta = {header[i+len(header)//2]:header[i] for i in range(len(header)//2)}
+
+        if meta != {}:
+            new_table.meta = meta
+
+        ext = self.model_file_extensions(model_version)
+        if path.endswith(ext):
+            path = path[:-len(ext)]
+
+        if new_path == '':
+            new_path=path+'_resample.dat'
+            
+        new_table.write(new_path, format='ascii.ecsv', overwrite=True)
         return True
 
-    def _generate_wav_sampling(self, max_wavs):
+    def _generate_wav_sampling(self, max_wavs, min_wav=1):
         if type(self.R) not in [list, np.ndarray]:
             R = [self.R]
         else:
             R = self.R
         # Generate the desired wavelength sampling.
-        x = [1.]
+        x = [min_wav]
 
         for i in range(len(R)):
             if i == len(R)-1 or R[i] > R[i+1]:
@@ -850,17 +995,59 @@ class StarFit:
         return result
 
 
-    def fit_catalog(self, photometry_function, bands, photometry_function_kwargs={}, libraries_to_fit='all', sys_err=None, filter_mask=None, subset=None):
+    def fit_catalog(self, 
+                photometry_function: Callable = None,
+                bands: List[str] = 'internal',
+                photometry_function_kwargs: dict = {},  
+                libraries_to_fit: Union[str, List[str]] = 'all',  
+                sys_err=None, 
+                filter_mask=None, 
+                subset=None,
+                fnu=None, 
+                efnu=None):
         '''
-        Photometry function should be a function that returns the fluxes and flux errors to be fit.
+        Photometry function should be a function that returns the fluxes and flux errors to be fit. Or directly provide the fluxes and errors.
+
+        Parameters
+        ----------
+        photometry_function : Callable
+            Function that returns the fluxes and flux errors to be fit.
+        bands : List[str]
+            List of bands to fit.
+        photometry_function_kwargs : dict, optional
+            Keyword arguments for the photometry function. The default is {}.
+        libraries_to_fit : Union[str, List[str]], optional
+            Libraries to fit. The default is 'all'.
+        sys_err : float, optional
+            Systematic error to include in the fit. The default is None.
+        filter_mask : np.ndarray, optional
+            Mask to apply to the filters. The default is None.
+        subset : np.ndarray, optional
+            Subset of templates to fit. The default is None.
+        fnu : np.ndarray, optional
+            Fluxes to fit if not using photometry_function. The default is None.
+        efnu : np.ndarray, optional
+            Errors to fit if not using photometry_function. The default is None.
+
 
         '''
 
-        fnu, efnu = photometry_function(**photometry_function_kwargs)
+        assert photometry_function is not None or (fnu is not None and efnu is not None), 'Provide either a photometry function or fluxes and errors.'
+
+        if bands == 'internal':
+            bands = self.model_filters
+        
+        if photometry_function is not None:
+            fnu, efnu = photometry_function(**photometry_function_kwargs)
+
         assert len(fnu) == len(efnu), 'Flux and error arrays must be the same length.'
         assert len(fnu[0]) == len(bands), 'Flux and error arrays must have the same number of bands.'
         assert type(fnu) is u.Quantity, 'Fluxes must be astropy Quantities.'
         assert type(efnu) is u.Quantity, 'Errors must be astropy Quantities.'
+        
+        # Helps with fitting one object catalogues
+        fnu = np.atleast_2d(fnu)
+        efnu = np.atleast_2d(efnu)
 
         self.fnu = fnu.to(u.nJy).value 
         self.efnu = efnu.to(u.nJy).value
@@ -874,20 +1061,59 @@ class StarFit:
         
         # Make mask for columns in self.model_filters that aren't in bands
 
-        mask = np.array([band in bands for band in self.model_filters])
+        split_model_filters = [i.split('.')[-1] for i in self.model_filters]
+
+        fitted_bands = []
+        band_idx = []
+        for band in bands:
+            if band not in self.model_filters:
+                # check all filters in split_model_filters are unique
+                #if len(split_model_filters) != len(set(split_model_filters)):
+                #    duplicates = [item for item, count in collections.Counter(split_model_filters).items() if count > 1]
+                #    raise Exception(f'Didn\'t recognize {band} and the attempt to compare to filters without instrument names resulted in duplicate {duplicates}. Please provide the full filter name. E.g. ACS_WFC.F814W')
+                if band in split_model_filters:
+                    # Check if band is in split_model_filters more than once
+                    if split_model_filters.count(band) > 1:
+                        raise Exception(f'Band {band} is in internal filter dictionary more than once. Please provide the full filter name. E.g. ACS_WFC.F814W')
+                    match_idx = split_model_filters.index(band)
+                    full_band = self.model_filters[match_idx]
+                    print(f'Warning! Assuming {band} is the same as {full_band}')
+                    fitted_bands.append(full_band)
+                    band_idx.append(match_idx)
+                else:
+                    
+                    print(f'Warning! Band {band} not in model_filters. Removing from bands to fit.')
+                    bands.remove(band)
+            else:
+                fitted_bands.append(band)
+                band_idx.append(self.model_filters.index(band))
+
+
+        mask = np.array([i in fitted_bands for i in self.model_filters])
         # Check actual bands are in the same order as self.model_filters
-        self.bands_to_fit = [band for band in self.model_filters if band in bands]
-        idxs = np.array([bands.index(band) for band in self.bands_to_fit])
+        self.bands_to_fit = fitted_bands
+        
+        # Make sure fnu and efnu are in the same order as self.model_filters - don't need same position, just same order
+        idxs = [self.model_filters.index(band) for band in fitted_bands]
+        # convert to order - e.g. 0, 1, 2, 3, 4, 5 -> 0, 1, 2, 3, 4, 5
+        idxs = np.argsort(idxs)
+
+        print(f'Fitting {len(fitted_bands)} bands: {fitted_bands}')
+
         self.fnu = self.fnu[:, idxs]
         self.efnu = self.efnu[:, idxs]
         self.zp = np.ones_like(self.fnu)
         self.ok_data = np.ones_like(self.fnu, dtype=bool)
         self.nusefilt = self.ok_data.sum(axis=1)
 
+        assert len(self.bands_to_fit) == self.NFILT, f'Number of bands to fit does not match number of bands in fluxes: {len(self.bands_to_fit)} != {self.NFILT}'
+
         # Check that all bands are in the model_filters
         self.reduced_template_grid = self.combined_template_grid[mask, :].T
 
         result = self._fit_lsq(self.reduced_template_grid, filter_mask=filter_mask, subset=subset, sys_err=sys_err)
+
+        return result
 
     def plot_fit(self, idx, wav_unit=u.micron, flux_unit=u.nJy):
 
@@ -913,6 +1139,19 @@ class StarFit:
 
         ax[0].errorbar(wavs, plot_flux, yerr=err, fmt='o', label='Data',
                         color='crimson', markeredgecolor='k', zorder=10)
+
+        if flux_unit == u.ABmag:
+            
+            # plot any negative fluxes as  3 sigma upper limits
+            for i, f in enumerate(flux):
+                if f < 0:
+                    from matplotlib.patches import FancyArrowPatch
+                    error_3sigma = 3*flux_err[i]
+                    error_3sigma = error_3sigma.to(flux_unit, equivalencies=u.spectral_density(wavs[i]*wav_unit)).value
+                    print(error_3sigma)
+                    length = abs(ax[0].get_ylim()[1] - ax[0].get_ylim()[0])*0.15
+                    ax[0].add_patch(FancyArrowPatch((wavs[i], error_3sigma), (wavs[i], error_3sigma+length), color='crimson', zorder=10, edgecolor='k', arrowstyle='-|>, scaleA=3', mutation_scale=2))
+
         best_ix = self.star_min_ix[idx]
         model_phot = self.star_tnorm[idx, best_ix]*self.reduced_template_grid[best_ix] * u.nJy
         
@@ -934,9 +1173,13 @@ class StarFit:
 
         self.plot_best_template(best_ix, idx, ax=ax[0], color='navy', wav_unit=wav_unit, flux_unit=flux_unit, linestyle='solid', lw=1)
 
-        info_box = f'Best Fit: {library}:{name}\n$\chi^2_\\nu$: {self.star_min_chinu[idx]:.2f}\n$\chi^2$: {self.star_min_chi2[idx]:.2f}'
+        params = self._describe_model(f'{self.library_path}/{library}/resampled/{name}')
+        latex_labels = [self._latex_label(param) for param in params.keys()]
+        info_box = '\n'.join([f'{latex_labels[i]}: {params[param]}{self.param_unit(param):latex}' for i, param in enumerate(params.keys())])
+        lower_info_box = f'$\chi^2_\\nu$: {self.star_min_chinu[idx]:.2f}\n$\chi^2$: {self.star_min_chi2[idx]:.2f}'
+        info_box = f'Best Fit: {library.replace("_", " ").capitalize()}\n{info_box}\n{lower_info_box}'
         
-        ax[0].text(0.05, 0.95, info_box, transform=ax[0].transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')])
+        ax[0].text(1.02, 0.98, info_box, transform=ax[0].transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')], bbox=dict(facecolor='w', alpha=0.5, edgecolor='black', boxstyle='square,pad=0.5'))
         ax[1].hlines(0, wavs[0], wavs[-1], linestyle='--', color='k')
         ax[1].vlines(wavs, (flux - model_phot)/flux_err, 0, color='k', alpha=0.5, linestyle='dotted')
         ax[1].set_ylim(np.nanmin((flux - model_phot)/flux_err)-0.2, np.nanmax((flux - model_phot)/flux_err)+0.2)
@@ -953,7 +1196,7 @@ class StarFit:
     def plot_best_template(self, model_idx, input_idx, ax=None, wav_unit=u.micron, flux_unit=u.nJy, **kwargs):
         library, name = self.get_template_name(model_idx)
         
-        path = f'{self.library_path}/{library}/{name}'
+        path = f'{self.library_path}/{library}/resampled/{name}'
 
         best_fit_coefficients = self.star_tnorm[input_idx, model_idx]
 
@@ -971,25 +1214,46 @@ class StarFit:
         meta = table.meta
         return meta
 
-    def color_color(x, y, libraries_to_fit='all'):
+    def color_color(self, x, y, libraries='all', unit=u.ABmag, **kwargs):
 
-        grid = self._build_combined_template_grid(libraries_to_fit=libraries_to_fit)
+        if libraries == 'all':
+            libraries = self.libraries
+
+        grid = self._build_combined_template_grid(libraries)
+
+        # convert to AB mag
+
+        if unit == u.ABmag:
+            grid_converted = -2.5*np.log10(grid * 1e-9) + 8.9
+        else:
+            print('Warning: unit not recognized. Fluxes are arbitrary.')
+            grid_converted = grid
 
         fig, ax = plt.subplots(1, 1, figsize=(6, 4), dpi=200)
 
 
         # Create dictionary of views into filter_data with filter names as keys
-        filter_idx = {band: i for i, band in enumerate(self.model_filters)}
-        filter_data = {band: grid[i] for band, i in filter_idx.items()}
+        filter_idx = {band.split('.')[0]: i for i, band in enumerate(self.model_filters)}
+        filter_data = {band: grid_converted[i] for band, i in filter_idx.items()}
+        
+        parser = FilterArithmeticParser()
 
         x_data = parser.parse_and_evaluate(x, filter_data)
         y_data = parser.parse_and_evaluate(y, filter_data)
 
-        ax.scatter(x_data, y_data, c='k', s=10)
+        ax.scatter(x_data, y_data, **kwargs)
         ax.set_xlabel(x)
         ax.set_ylabel(y)
+        libraries_string = '\n'.join(libraries)
+
+        ax.text(0.05, 0.95, f'Libraries:\n{libraries_string}', transform=ax.transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')])
 
         return fig, ax
+
+# To Do
+# Distances based on normalization
+# Plotting on galactic coordinates if ra and dec are provided
+# Filtering templates by stellar class, 
 
 
 
@@ -1113,3 +1377,42 @@ class FilterArithmeticParser:
         """
         tokens = self.tokenize(expression)
         return self.evaluate(tokens, filter_data)
+
+
+
+def iterate_model_parameters(model_parameters: Dict[str, Dict[str, List[Any]]], 
+                           model_name: str = None) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    """
+    Iterate over all parameter combinations for specified model(s) in model_parameters.
+    
+    Args:
+        model_parameters: Nested dictionary of model parameters
+        model_name: Specific model to iterate over. If None, iterate over all models.
+    
+    Returns:
+        Iterator yielding tuples of (model_name, parameter_combination)
+        where parameter_combination is a dictionary of parameter names and values
+    
+    Example:
+        for model, params in iterate_model_parameters(model_parameters, "sonora_bobcat"):
+            print(f"Model: {model}")
+            print(f"Temperature: {params['temp']}")
+            print(f"Surface gravity: {params['log_gs']}")
+            # etc...
+    """
+    models_to_iterate = [model_name] if model_name else model_parameters.keys()
+    
+    for model in models_to_iterate:
+        if model not in model_parameters:
+            raise ValueError(f"Model {model} not found in model_parameters")
+            
+        # Get parameter names and their possible values
+        params = model_parameters[model]
+        param_names = list(params.keys())
+        param_values = list(params.values())
+        
+        # Use itertools.product to generate all combinations
+        for combination in product(*param_values):
+            # Create dictionary of parameter names and their values for this combination
+            param_dict = dict(zip(param_names, combination))
+            yield model, param_dict

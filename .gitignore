@@ -184,4 +184,11 @@ examples/cloudy/data/*
 
 # Apple specific nonsense
 *.DS_Store
-models/
+models/*/
+!models/*.*
+src/BDFit/filters/*
+models/sonora_bobcat
+models/sonora_cholla
+models/sonora_elf_owl
+models/sonora_diamondback
+models/low-z
