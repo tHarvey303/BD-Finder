@@ -1243,7 +1243,7 @@ class StarFit:
         
         grid = self._build_combined_template_grid(libraries_to_fit)
 
-        print(f'Fitting with {", ".join(libraries_to_fit)} libraries.')
+        print(f'Fitting with {", ".join(libraries_to_fit)} libraries with {len(grid)} templates.')
 
         mask = np.array([i in fitted_bands for i in self.model_filters])
         # Check actual bands are in the same order as self.model_filters
