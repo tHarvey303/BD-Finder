@@ -38,7 +38,13 @@ file_urls={'sonora_bobcat':["https://zenodo.org/records/5063476/files/spectra_m+
 
 evolution_tables = {'sonora_bobcat':["https://zenodo.org/records/5063476/files/evolution_and_photometery.tar.gz?download=1"],
                     'sonora_diamondback':['https://zenodo.org/records/12735103/files/evolution.zip?download=1']}
-                    
+
+# in micron
+model_wavelength_ranges = {'sonora_elf_owl':(0.6, 15),
+                            'sonora_diamondback':(0.3, 250),
+                            'sonora_bobcat':(0.4, 50),
+                            'sonora_cholla':(0.3, 250),
+                            'low-z':(0.1, 99)}
 # Euclid bands
 # "Y", "Blue", "J", "Red", "H", "vis"
 # Euclid - NISP
@@ -118,7 +124,8 @@ class StarFit:
         max_wav : astropy Quantity
             Maximum wavelength to include in the models. Default is 10 microns.
         scaling_factor : float
-            Scaling factor to shift the models to reasonable flux ranges.
+            Scaling factor to shift the models to reasonable flux ranges. In general use this should not be modified, as changing this
+            without also recomputing all photometry will result in incorrectly normalized SEDs. Default is 1e-22.
         '''
 
         if library_path == 'internal':
@@ -149,11 +156,15 @@ class StarFit:
         self.template_grids = {}
         self.template_bands = {}
         self.template_names = {}
+        self.template_parameters = {}
 
         if compile_bands == 'default':
             self.model_filters = default_bands
         else:
             self.model_filters = compile_bands
+
+
+        self._fetch_transmission_bandpasses()
             
         # If compiled data exists, load it. If not, run setup_libraries. 
 
@@ -174,8 +185,6 @@ class StarFit:
 
         print(f'Total models: {len(self.combined_template_grid.T)}')
 
-
-
     def _load_template_grid(self, library_path, library):
         with h5.File(f"{library_path}/{library}_photometry_grid.hdf5", 'r') as file:
             self.template_grids[library] = np.array(file['template_grid'][:])
@@ -190,6 +199,14 @@ class StarFit:
         
             self.template_names[library] = list(file['names'][:])
             self.template_names[library] = [i.decode('utf-8') for i in self.template_names[library]]
+
+            if 'meta' in file:
+                template_parameter_keys = list(file['meta'].keys())
+                for key in self.template_parameters:
+                    self.template_parameters[key] = file['meta'][key][:]
+                    # parse string metas if needed
+                    if any([isinstance(i, bytes) for i in self.template_parameters[key]]):
+                        self.template_parameters[key] = [i.decode('utf-8') for i in self.template_parameters[key]]
 
             file.close()
         
@@ -229,8 +246,6 @@ class StarFit:
     def _type_from_temp(self, temp):
         # From Sonora Elf Owl
         temp_range = {'Y':(275, 550), 'T':(575, 1200), 'L':(1300, 2400)}
-
-
 
     def setup_libraries(self, path='sonora_data/', libraries = ["sonora_bobcat", "sonora_cholla", "sonora_evolution_and_photometry"]):
         for library in libraries:
@@ -292,7 +307,6 @@ class StarFit:
                 # Fix permissions issues
                 os.system(f'chmod -R 777 {out_dir}/')
                 
-    
     def _convolve_sed(self, mags, wavs_um, filters, input='mag'):
 
         self._fetch_transmission_bandpasses()
@@ -523,12 +537,10 @@ class StarFit:
                     for key in metas.keys():
                         file['meta'][key] = metas[key]
 
-        # Return the last template grid and names (consistent with original function)
-        with h5.File(f'{model_path}/{model_versions[-1]}_{output_file_name}', 'r') as file:
-            template_grid = file['template_grid'][:]
-            names = file.attrs.get('names', file['names'][:] if 'names' in file else [])
-        
-        return template_grid, names
+        self.template_grids[model_version] = template_grid
+        self.template_bands[model_version] = bands
+        self.template_names[model_version] = names
+        self.template_parameters[model_version] = metas.keys()
 
     def _deduplicate_templates(
         self,
@@ -591,10 +603,8 @@ class StarFit:
         
         return deduplicated_grid, duplicate_map
 
-
     def _fetch_transmission_bandpasses(self, save_folder: str = 'filters/'):
-        
-       
+             
         if len(self.model_filters) != len(self.band_codes):
             filter_wavs = {}
             filter_instruments = {}
@@ -944,7 +954,7 @@ class StarFit:
             else:
                 new_disp_grid = np.arange(table_order['wav'].min(), table_order['wav'].max(), self.resample_step) * u.AA
     
-            fluxes = spectres.spectres(new_disp_grid.to(u.AA).value, table_order['wav'].to(u.AA).value, table_order['Flux (erg/cm^2/s/Hz)'].value, fill=0, verbose=False)
+            fluxes = spectres.spectres(new_disp_grid.to(u.AA).value, table_order['wav'].to(u.AA).value, table_order['Flux (erg/cm^2/s/Hz)'].value, fill=np.nan, verbose=False)
 
             new_table['wav'] = new_disp_grid 
             new_table['flux_nu'] = fluxes * u.erg/(u.cm**2*u.s*u.Hz)
@@ -1043,8 +1053,8 @@ class StarFit:
                 ).sum(axis=1)
         
         # "Best" stellar template
-        star_min_ix = np.argmin(star_chi2, axis=1)
-        star_min_chi2 = star_chi2.min(axis=1)
+        star_min_ix = np.nanargmin(star_chi2, axis=1)
+        star_min_chi2 = np.nanmin(star_chi2, axis=1)
         
         if subset is None:
             star_min_chinu = star_min_chi2 / (self.nusefilt - 1)
@@ -1087,7 +1097,11 @@ class StarFit:
                 filter_mask=None, 
                 subset=None,
                 fnu=None, 
-                efnu=None):
+                efnu=None,
+                catalogue_ids=None,
+                dump_fit_results=False,
+                dump_fit_results_path='fit_results.pkl',
+                outside_wav_range_behaviour='clip'):
         '''
         Photometry function should be a function that returns the fluxes and flux errors to be fit. Or directly provide the fluxes and errors.
 
@@ -1111,6 +1125,15 @@ class StarFit:
             Fluxes to fit if not using photometry_function. The default is None.
         efnu : np.ndarray, optional
             Errors to fit if not using photometry_function. The default is None.
+        catalogue_ids : List, optional
+            List of catalogue ids. The default is None.
+        dump_fit_results : bool, optional
+            Whether to dump the fit results to a pickle file. The default is False.
+        dump_fit_results_path : str, optional
+            Path to dump the fit results. The default is 'fit_results.pkl'.
+        outside_wav_range_behaviour : str, optional
+            Behaviour for when the wavelength range of the bands to fit is outside the wavelength range of the library. The options
+            are either 'clip' to exlude bands or 'subset' to only fit the bands that are within the library wavelength range. The default is 'clip'.
 
 
         '''
@@ -1123,24 +1146,27 @@ class StarFit:
         if photometry_function is not None:
             fnu, efnu = photometry_function(**photometry_function_kwargs)
 
+              # Helps with fitting one object catalogues
+        fnu = np.atleast_2d(fnu)
+        efnu = np.atleast_2d(efnu)
+
         assert len(fnu) == len(efnu), 'Flux and error arrays must be the same length.'
         assert len(fnu[0]) == len(bands), 'Flux and error arrays must have the same number of bands.'
         assert type(fnu) is u.Quantity, 'Fluxes must be astropy Quantities.'
         assert type(efnu) is u.Quantity, 'Errors must be astropy Quantities.'
+
         
-        # Helps with fitting one object catalogues
-        fnu = np.atleast_2d(fnu)
-        efnu = np.atleast_2d(efnu)
+        self.catalogue_ids = catalogue_ids
+        if catalogue_ids is not None:
+            assert len(catalogue_ids) == len(fnu), 'Catalogue IDs must be the same length as the fluxes.'
 
         self.fnu = fnu.to(u.nJy).value 
         self.efnu = efnu.to(u.nJy).value
-        self.NFILT = len(bands)
+        
 
         # Get template grid here.
         if libraries_to_fit == 'all':
             libraries_to_fit = self.libraries
-
-        self._fetch_transmission_bandpasses()
         
         # Make mask for columns in self.model_filters that aren't in bands
 
@@ -1148,6 +1174,7 @@ class StarFit:
 
         fitted_bands = []
         band_idx = []
+        band_compar_dict = {}
         for band in bands:
             if band not in self.model_filters:
                 # check all filters in split_model_filters are unique
@@ -1161,6 +1188,10 @@ class StarFit:
                     match_idx = split_model_filters.index(band)
                     full_band = self.model_filters[match_idx]
                     print(f'Warning! Assuming {band} is the same as {full_band}')
+                    self.filter_wavs[band] = self.filter_wavs[full_band]
+                    self.filter_ranges[band] = self.filter_ranges[full_band]
+                    self.filter_instruments[band] = self.filter_instruments[full_band]
+                    band_compar_dict[band] = full_band
                     fitted_bands.append(full_band)
                     band_idx.append(match_idx)
                 else:
@@ -1169,13 +1200,54 @@ class StarFit:
                     bands.remove(band)
             else:
                 fitted_bands.append(band)
+                band_compar_dict[band] = band
                 band_idx.append(self.model_filters.index(band))
 
+        min_wav, max_wav = self.wavelength_range_of_bands(fitted_bands)
+        check_band_ranges = False
+
+        extreme_min_wav, extreme_max_wav = 0 * u.um, np.inf * u.um
+        for library in libraries_to_fit:
+            library_min_wav, library_max_wav = self.wavelength_range_of_library(library)
+            library_extreme_min_wav, library_extreme_max_wav = self.extreme_wavelength_range_of_library(library)
+
+            if library_min_wav > min_wav:
+                print(f'Warning! Minimum wavelength of library {library} is greater than minimum wavelength of bands to fit. {library_min_wav.to(u.um):.2f} > {min_wav.to(u.um):.2f}')
+                if min_wav > library_extreme_min_wav:
+                    print(f'You can extend this range to {library_extreme_min_wav.to(u.um)} to include the minimum wavelength of the library {library} by recompting the photometry grid.') 
+                check_band_ranges = True
+
+            if library_max_wav < max_wav:
+                print(f'Warning! Maximum wavelength of library {library} is less than maximum wavelength of bands to fit. {library_max_wav.to(u.um):.2f} < {max_wav.to(u.um):.2f}')
+                if max_wav < library_extreme_max_wav:
+                    print(f'You can extend this range to {library_extreme_max_wav.to(u.um):.2f} to include the maximum wavelength of the library {library} by recompting the photometry grid.')
+                check_band_ranges = True
+            
+            extreme_min_wav = max(extreme_min_wav, library_extreme_min_wav)
+            extreme_max_wav = min(extreme_max_wav, library_extreme_max_wav)
+
+        if check_band_ranges:
+            if outside_wav_range_behaviour == 'clip':
+                print('Clipping bands to fit to the wavelength range of the library.')
+                fitted_bands = [band for band in fitted_bands if self.filter_wavs[band] >= extreme_min_wav and self.filter_wavs[band] <= extreme_max_wav]
+
+            elif outside_wav_range_behaviour == 'subset':
+                print('Subsetting templates to fit to the wavelength range of the bands.')
+                libraries_to_fit = [library for library in libraries_to_fit if self.wavelength_range_of_library(library)[0] < min_wav and self.wavelength_range_of_library(library)[1] > max_wav]
+                
+                if len(libraries_to_fit) == 0:
+                    raise Exception('No libraries to fit. Please provide bands that are within the wavelength range of the library or change the value of outside_wav_range_behaviour.')
+            else:
+                raise Exception('Unknown value for outside_wav_range_behaviour. Please provide either "clip" or "subset".')
+
+        
+        grid = self._build_combined_template_grid(libraries_to_fit)
+
+        print(f'Fitting with {", ".join(libraries_to_fit)} libraries.')
 
         mask = np.array([i in fitted_bands for i in self.model_filters])
         # Check actual bands are in the same order as self.model_filters
         self.bands_to_fit = fitted_bands
-        
         # Make sure fnu and efnu are in the same order as self.model_filters - don't need same position, just same order
         idxs = [self.model_filters.index(band) for band in fitted_bands]
         # convert to order - e.g. 0, 1, 2, 3, 4, 5 -> 0, 1, 2, 3, 4, 5
@@ -1183,22 +1255,65 @@ class StarFit:
 
         print(f'Fitting {len(fitted_bands)} bands: {fitted_bands}')
 
+        self.NFILT = len(fitted_bands)
         self.fnu = self.fnu[:, idxs]
         self.efnu = self.efnu[:, idxs]
         self.zp = np.ones_like(self.fnu)
         self.ok_data = np.ones_like(self.fnu, dtype=bool)
         self.nusefilt = self.ok_data.sum(axis=1)
+        self.mask = mask
 
         assert len(self.bands_to_fit) == self.NFILT, f'Number of bands to fit does not match number of bands in fluxes: {len(self.bands_to_fit)} != {self.NFILT}'
 
         # Check that all bands are in the model_filters
-        self.reduced_template_grid = self.combined_template_grid[mask, :].T
+        self.reduced_template_grid = grid[self.mask, :].T
 
-        result = self._fit_lsq(self.reduced_template_grid, filter_mask=filter_mask, subset=subset, sys_err=sys_err)
+        fit_results = self._fit_lsq(self.reduced_template_grid, filter_mask=filter_mask, subset=subset, sys_err=sys_err)
 
-        return result
+        if dump_fit_results:
+            keys_to_dump = ['fnu', 'efnu', 'zp', 'ok_data', 'nusefilt', 'bands_to_fit', 'catalogue_ids', 'mask']
+            dump_dict = {key: getattr(self, key) for key in keys_to_dump}
+            dump_dict.update(fit_results)
 
-    def plot_fit(self, idx, wav_unit=u.micron, flux_unit=u.nJy):
+            if '/' in dump_fit_results_path:
+                path = dump_fit_results_path.split('/')
+                path = '/'.join(path[:-1])
+                if not os.path.exists(path):
+                    os.makedirs(path)
+
+            if not dump_fit_results_path.endswith('.pkl'):
+                dump_fit_results_path = f'{dump_fit_results_path}.pkl'
+
+            with open(dump_fit_results_path, 'wb') as f:
+                import pickle
+                pickle.dump(dump_dict, f)
+
+        return fit_results
+
+    def load_results_from_pickle(self, path):
+        import pickle
+        with open(path, 'rb') as f:
+            results = pickle.load(f)
+
+        for key in results.keys():
+            if key == 'mask':
+                self.reduce_template_grid = self.combined_template_grid[results[key], :].T
+
+            setattr(self, key, results[key])
+ 
+    def plot_fit(self, idx=None, cat_id=None, wav_unit=u.micron, flux_unit=u.nJy):
+
+        assert idx is not None or cat_id is not None, 'Provide either an index or a catalogue id. (if catalogue IDs were provided during fitting'
+
+        if cat_id is not None and idx is not None:
+            raise Exception('Provide either an index or a catalogue id, not both.')
+        
+        if cat_id is not None:
+            pname = cat_id
+            idx = np.where(self.catalogue_ids == cat_id)[0][0]
+        else:
+            pname = idx
+            
 
         wavs = [self.filter_wavs[band].to(wav_unit).value for band in self.bands_to_fit]
         flux = self.fnu[idx] * u.nJy
@@ -1260,7 +1375,7 @@ class StarFit:
         latex_labels = [self._latex_label(param) for param in params.keys()]
         info_box = '\n'.join([f'{latex_labels[i]}: {params[param]}{self.param_unit(param):latex}' for i, param in enumerate(params.keys())])
         lower_info_box = f'$\chi^2_\\nu$: {self.star_min_chinu[idx]:.2f}\n$\chi^2$: {self.star_min_chi2[idx]:.2f}'
-        info_box = f'Best Fit: {library.replace("_", " ").capitalize()}\n{info_box}\n{lower_info_box}'
+        info_box = f'{pname}\nBest Fit: {library.replace("_", " ").capitalize()}\n{info_box}\n{lower_info_box}'
         
         ax[0].text(1.02, 0.98, info_box, transform=ax[0].transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')], bbox=dict(facecolor='w', alpha=0.5, edgecolor='black', boxstyle='square,pad=0.5'))
         ax[1].hlines(0, wavs[0], wavs[-1], linestyle='--', color='k')
@@ -1332,7 +1447,7 @@ class StarFit:
         libraries_string = '\n'.join(libraries)
 
         if show_fitted_galaxies:
-            if getattr(self, fnu, None) is None or getattr(self, efnu, None) is None or getattr(self, bands_to_fit, None) is None:
+            if getattr(self, 'fnu', None) is None or getattr(self, 'efnu', None) is None or getattr(self, 'bands_to_fit', None) is None:
                 raise Exception('No fitted galaxies to plot.')
            
             # need dictionary matching self.bands_to_fit and self.fnu
@@ -1355,7 +1470,80 @@ class StarFit:
         ax.text(0.05, 0.95, f'Libraries:\n{libraries_string}', transform=ax.transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')])
 
         return fig, ax
+    
+    def filter_template_grid_by_parameter(self, parameter, value, exclude_unparametrized=True, combine='and'):
+        '''
+        Filter the template grid by a parameter value. E.g. filter by temperature, log g, etc.
 
+        Parameters
+        ----------
+        parameter : str or list of parameters - if allowing multiple parameters to be filtered by - then provide a list of parameters and values of the same length
+            Parameter to filter by.
+        value : float, string, list of allowed values or tuple range. - specific strings with special behaviour are 'T', 'L' and 'Y' which
+        refer to temperature ranges for T dwarfs, L dwarfs and Y dwarfs respectively.
+            Value to filter by.
+        exclude_unparametrized : bool, optional
+            Exclude templates that do not have the parameter. The default is True.
+        combine: str, optional
+            If filtering by multiple parameters, how to combine the filters. Options are 'and' and 'or'. The default is 'and'.
+
+
+        Returns
+        -------
+        filtered_grid : np.ndarray
+            Filtered template grid.
+        '''
+
+        param_aliases = {'temp': ['t', 'teff', 'temperature', 't_eff', 'temp'],
+                        'log_g':['g', 'logg', 'gravity', 'log_g', 'log_g'],
+                        'met':['Z', 'metallicity', 'zmet', 'met'], 
+                        'co':['c/o', 'co', 'c_o', 'co_ratio'],
+                        'f':['f', 'fparam', 'f_param']}
+
+
+        if type(parameter) is not list:
+            parameter = [parameter]
+            value = [value]
+
+        assert len(parameter) == len(value), 'Length of parameters and values must be the same.'
+
+        global_mask = np.ones(len(self.combined_template_grid), dtype=bool)
+
+        temp_ranges = {'T':(575, 1200), 'Y':(275, 550), 'L':(1300, 2400)}
+
+        for param, val in zip(parameter, value):
+            
+            param_use = param_aliases.get(param.lower(), param.lower())
+
+
+            
+            # common aliases
+
+            if param.lower() in ['teff', 'temp', 'T']:
+                if type(value) is str:
+                    value = temp_ranges[value.upper()]
+                mask = (self.template_parameters['teff'] >= value[0]) & (self.template_parameters['teff'] <= value[1])
+
+    def wavelength_range_of_template(self, library, name):
+        path = f'{self.library_path}/{library}/resampled/{name}'
+        table = Table.read(path, format='ascii.ecsv', delimiter=' ', names=['wav', 'flux_nu'])
+        return table['wav'].min()*u.AA, table['wav'].max()*u.AA
+    
+    def wavelength_range_of_library(self, library):
+        name = self.template_names[library][0]
+        min_wav, max_wav = self.wavelength_range_of_template(library, name) 
+        return min_wav, max_wav
+
+    def extreme_wavelength_range_of_library(self, library):
+        return np.array(model_wavelength_ranges[library]) * u.um
+
+    def wavelength_range_of_bands(self, bands):
+        wav_range = [self.filter_ranges[band] for band in bands]
+        wav_range = np.ndarray.flatten(np.array(wav_range)) * u.AA
+        return wav_range.min().to(u.um), wav_range.max().to(u.um)
+
+        
+        
 # To Do
 # Distances based on normalization
 # Plotting on galactic coordinates if ra and dec are provided
