@@ -74,6 +74,16 @@ model_parameters = {'sonora_bobcat':{
             'kzz':[-1.0, 10.0, 2.0]},
 }
 
+model_param_names = ["temp", "log_g", "kzz", "met", "co", "f"]
+model_param_dtypes = {
+    "temp": float,
+    "log_g": float,
+    "kzz": float,
+    "met": str,
+    "co": str,
+    "f": str
+}
+
 # elf owl
 # The parameters included within this grid are effective temperature (Teff), gravity (log(g)), vertical eddy diffusion coefficient (log(Kzz)), atmospheric metallicity ([M/H]), and Carbon-to-Oxygen ratio (C/O).
 
@@ -149,6 +159,7 @@ class StarFit:
         self.template_grids = {}
         self.template_bands = {}
         self.template_names = {}
+        self.template_parameters = {}
 
         if compile_bands == 'default':
             self.model_filters = default_bands
@@ -175,19 +186,29 @@ class StarFit:
         print(f'Total models: {len(self.combined_template_grid.T)}')
 
 
-
     def _load_template_grid(self, library_path, library):
+
         with h5.File(f"{library_path}/{library}_photometry_grid.hdf5", 'r') as file:
             self.template_grids[library] = np.array(file['template_grid'][:])
             self.template_bands[library] = list(file.attrs['bands'])
-            if self.template_bands[library] != self.model_filters:
+            if not all(filt in self.template_bands[library] for filt in self.model_filters):
+            #if self.template_bands[library] != self.model_filters:
                 print(f'Warning! Model filters and compiled filters do not match for {library}.')
                 print(self.model_filters, type(self.model_filters))
                 print('Attempting to add:', [i for i in self.model_filters if i not in self.template_bands[library]])
                 file.close()
                 self.build_template_grid(self.model_filters, library, model_path=library_path)
                 self._load_template_grid(library_path, library)
-        
+
+            if 'meta' in file:
+                if library not in self.template_parameters.keys():
+                    self.template_parameters[library] = {}
+                for key in list(file['meta'].keys()):
+                    self.template_parameters[library][key] = file['meta'][key][:]
+                    # parse string metas if needed
+                    if any([isinstance(i, bytes) for i in self.template_parameters[library][key]]):
+                        self.template_parameters[library][key] = [i.decode('utf-8') for i in self.template_parameters[library][key]]
+
             self.template_names[library] = list(file['names'][:])
             self.template_names[library] = [i.decode('utf-8') for i in self.template_names[library]]
 
@@ -227,10 +248,9 @@ class StarFit:
         return self.combined_template_grid
         
     def _type_from_temp(self, temp):
+        # TODO: This currently does nothing
         # From Sonora Elf Owl
         temp_range = {'Y':(275, 550), 'T':(575, 1200), 'L':(1300, 2400)}
-
-
 
     def setup_libraries(self, path='sonora_data/', libraries = ["sonora_bobcat", "sonora_cholla", "sonora_evolution_and_photometry"]):
         for library in libraries:
@@ -1193,7 +1213,6 @@ class StarFit:
 
         # Check that all bands are in the model_filters
         self.reduced_template_grid = self.combined_template_grid[mask, :].T
-
         result = self._fit_lsq(self.reduced_template_grid, filter_mask=filter_mask, subset=subset, sys_err=sys_err)
 
         return result
@@ -1256,7 +1275,7 @@ class StarFit:
 
         self.plot_best_template(best_ix, idx, ax=ax[0], color='navy', wav_unit=wav_unit, flux_unit=flux_unit, linestyle='solid', lw=1)
 
-        params = self._describe_model(f'{self.library_path}/{library}/resampled/{name}')
+        params = self._extract_model_meta(library, name)
         latex_labels = [self._latex_label(param) for param in params.keys()]
         info_box = '\n'.join([f'{latex_labels[i]}: {params[param]}{self.param_unit(param):latex}' for i, param in enumerate(params.keys())])
         lower_info_box = f'$\chi^2_\\nu$: {self.star_min_chinu[idx]:.2f}\n$\chi^2$: {self.star_min_chi2[idx]:.2f}'
@@ -1269,11 +1288,62 @@ class StarFit:
         ax[0].legend()
 
         return fig, ax
+    
+    def make_cat(
+        self,
+        save_path: Optional[str] = None,
+        meta_names: Optional[List[str]] = model_param_names,
+    ):
+        best_template_libraries_names = np.array([self.get_template_name(i) for i in self.star_min_ix])
+        best_library_names = best_template_libraries_names[:, 0]
+        best_template_names = best_template_libraries_names[:, 1]
+        if meta_names is not None:
+            best_model_params = np.array([self.get_template_parameters(i) for i in self.star_min_ix])
+            best_template_meta = {
+                meta_name: np.array(
+                    [
+                        meta[meta_name] if meta_name in meta.keys() else np.nan 
+                        for meta in best_model_params
+                    ]
+                ).astype(model_param_dtypes[meta_name])
+                for meta_name in meta_names
+            }
+            meta_dtypes = [model_param_dtypes[name] for name in meta_names]
+        else:
+            best_template_meta = {}
+            meta_dtypes = []
 
-    def get_template_name(self,idx):
+        norm = np.array([self.star_tnorm[idx, best_ix] for idx, best_ix in enumerate(self.star_min_ix)])
+        
+        phot = np.array([norm[idx] * self.reduced_template_grid[best_ix] for idx, best_ix in enumerate(self.star_min_ix)])
+        assert phot.shape[1] == len(self.bands_to_fit)
+        phot_data = {f"{band}_nJy": phot[:, i] for i, band in enumerate(self.bands_to_fit)}
+
+        tab = Table(
+            data = {
+                "best_template": best_template_names,
+                "best_library": best_library_names,
+                "chi2": self.star_min_chi2,
+                "red_chi2": self.star_min_chinu,
+                "template_norm": norm,
+                **best_template_meta,
+                **phot_data,
+            },
+            dtype = [str, str, float, float, float] + meta_dtypes + list(np.full(phot.shape[1], float)),
+        )
+        meta = {
+            "scaling_factor": self.scaling_factor,
+            "library_path": self.library_path,
+        }
+        tab.meta = meta
+        if save_path is not None:
+            tab.write(save_path, overwrite = True)
+        return tab
+
+    def get_template_name(self,model_idx):
         for library in self.libraries:
-            if idx >= self.idx_ranges[library][0] and idx < self.idx_ranges[library][1]:
-                return library, self.template_names[library][idx]
+            if model_idx >= self.idx_ranges[library][0] and model_idx < self.idx_ranges[library][1]:
+                return library, self.template_names[library][model_idx - self.idx_ranges[library][0]]
 
     def plot_best_template(self, model_idx, input_idx, ax=None, wav_unit=u.micron, flux_unit=u.nJy, **kwargs):
         library, name = self.get_template_name(model_idx)
@@ -1291,7 +1361,16 @@ class StarFit:
         
         ax.plot(table['wav'].to(wav_unit), table['flux_njy'].to(flux_unit), **kwargs)
 
-    def _describe_model(self, path):
+    def _get_model_path_from_lib_name(self, library, name):
+        return f'{self.library_path}/{library}/resampled/{name}'
+    
+    def get_template_parameters(self, model_idx):
+        for library in self.libraries:
+            if model_idx >= self.idx_ranges[library][0] and model_idx < self.idx_ranges[library][1]:
+                return {key: values[model_idx - self.idx_ranges[library][0]] for key, values in self.template_parameters[library].items()}
+
+    def _extract_model_meta(self, library, name):
+        path = self._get_model_path_from_lib_name(library, name)
         table = Table.read(path, format='ascii.ecsv', delimiter=' ', names=['wav', 'flux_nu'], units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
         meta = table.meta
         return meta
@@ -1312,7 +1391,6 @@ class StarFit:
             grid_converted = grid
 
         fig, ax = plt.subplots(1, 1, figsize=(6, 4), dpi=200)
-
 
         # Create dictionary of views into filter_data with filter names as keys
         filter_idx = {band.split('.')[0]: i for i, band in enumerate(self.model_filters)}
@@ -1348,10 +1426,7 @@ class StarFit:
 
             x_data = parser.parse_and_evaluate(x, band_data)
             y_data = parser.parse_and_evaluate(y, band_data)
-
-
-
-
+        
         ax.text(0.05, 0.95, f'Libraries:\n{libraries_string}', transform=ax.transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')])
 
         return fig, ax
