@@ -1,17 +1,28 @@
-# README for fit_sonora.py
-# 2025.02.22
-# Thomas Harvey
-
-This script takes a catalog and fits the Sonora Bobcat, Cholla, Diamondback and Elf Owl models, and the LOW-Z models.
-Sonora Bobcat and Cholla models are provided by Marley et al. (2021, Astrophysical Journal, in press.) and Karalidi et al. (2021, Astrophysical Journal, in press.). They are automatically downloaded from Zenodo if not found in directory code is run in.
+# BD Fitter
 
 
+This python package is for fitting brown dwarf (substellar mass object) photometry.  It currently supports the Sonora Bobcat, Cholla, Diamondback and Elf Owl models, and the LOW-Z models.
+Photometry for a range of filters is provided, and if more are needed the models are automatically downloaded from Zenodo/Harvard DataVerse if not found in directory code is run in.
 
-Code should be unpacked into a directory, which is where output and data files will be stored. By default sonora data is stored in 'sonora_data/'. base_path in convolve_sed_v2 should be changed to location of jwst_filters file if not in same location as code. 
+Model links: 
 
-On first run the code will take a while, as it downloads and unpacks data files (takes approx 20 Gb when unpacked). On subsequent runs the spectra are resampled for speed, so they will be much quicker. 
+[Sonora Bobcat](https://zenodo.org/records/5063476) ([Paper](https://iopscience.iop.org/article/10.3847/1538-4357/ac141d))
 
-Changes to code may need to be made to reflect catalogues column names for photometry. Style of EPOCHS catalogues for flux 'FLUX_APER_{band}_aper_corr_Jy', reflecting that the value is aperture corrected and in Jy. For flux error the form is f'FLUXERR_APER_{band}_loc_depth_10pc_Jy', reflecting that the flux uncertainity is derived from a local estimate of the depth, with a 10pc error floor, in Jy. In addition both of these columns have the shape (N, 5), as we measure aperture photometry in 5 circular apertures (radius 0.16, 0.25, 0.5, 0.75, 1 arcsec.) Changes to lines 220, 357, 359 may be required to fit a catalogue with a different format. 
+[Sonora Cholla](https://zenodo.org/records/4450269) ([Paper](https://iopscience.iop.org/article/10.3847/1538-4357/ac3140/meta))
+
+[Sonora Diamondback](https://zenodo.org/records/12735103) ([Paper](https://iopscience.iop.org/article/10.3847/1538-4357/ad71d5/meta))
+
+Sonora Elf Owl ([Y-Type](https://zenodo.org/records/10381250), [T-Type](https://zenodo.org/records/10385821), [L-Type](https://zenodo.org/records/10385987), [Paper](https://iopscience.iop.org/article/10.3847/1538-4357/ad18c2/meta))
+
+[LOWZ](https://doi.org/10.7910/DVN/SJRXUO) ([Paper](https://iopscience.iop.org/article/10.3847/1538-4357/ac013c))
+
+Please cite all fitted model papers and repositories DOIs if you use this code. 
+
+## Installation
+
+Clone this repository into a folder, and then do pip install . to install. 
+
+An example of use is available in examples/chi2_testing.ipynb. All the user needs to provide is an array of flux and flux uncertainity, and a list of bands (in SVO filter format, or abbreviated will work if HST/NIRcam filters).
 
 Code is still a work in progress. Contact the author at: thomas.harvey-3@manchester.ac.uk for help, improvements, problems, bugs, complaints etc...
 
