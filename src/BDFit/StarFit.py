@@ -80,7 +80,7 @@ model_parameters = {'sonora_bobcat':{
 
 default_bands = ["ACS_WFC.F435W", "ACS_WFC.F475W", "ACS_WFC.F606W", "ACS_WFC.F625W", "ACS_WFC.F775W", "ACS_WFC.F814W", "ACS_WFC.F850LP", 
                 "F070W", "F090W", "WFC3_IR.F105W", "WFC3_IR.F110W", "F115W", "WFC3_IR.F125W", "F150W", 
-                "WFC3_IR.F140W", "F140M", "WFC3_IR.F160W", "F162M", "F182M", "F200W", "F250M", 
+                "WFC3_IR.F140W", "F140M", "WFC3_IR.F160W", "F162M", "F182M", "F200W", "F210M", "F250M", 
                 "F277W", "F300M", "F335M", "F356W", "F360M", "F410M", "F430M",
                 "F444W", "F460M", "F480M", "F560W", "F770W", 
                 "NISP.Y", "NISP.J", "NISP.H", "VIS.vis",
@@ -180,16 +180,18 @@ class StarFit:
         with h5.File(f"{library_path}/{library}_photometry_grid.hdf5", 'r') as file:
             self.template_grids[library] = np.array(file['template_grid'][:])
             self.template_bands[library] = list(file.attrs['bands'])
-            try:
-                self.template_names[library] = list(file.attrs['names'])
-            except KeyError:
-                if 'names' in file.keys():
-                    self.template_names[library] = list(file['names'][:])
-                    self.template_names[library] = [i.decode('utf-8') for i in self.template_names[library]]
-                else:
-                    file.close()
-                    self._fix_names(library, model_path=library_path)
-                    
+            if self.template_bands[library] != self.model_filters:
+                print(f'Warning! Model filters and compiled filters do not match for {library}.')
+                print(self.model_filters, type(self.model_filters))
+                print('Attempting to add:', [i for i in self.model_filters if i not in self.template_bands[library]])
+                file.close()
+                self.build_template_grid(self.model_filters, library, model_path=library_path)
+                self._load_template_grid(library_path, library)
+        
+            self.template_names[library] = list(file['names'][:])
+            self.template_names[library] = [i.decode('utf-8') for i in self.template_names[library]]
+
+            file.close()
         
     def _build_combined_template_grid(self, libraries='all'):
         
@@ -357,91 +359,175 @@ class StarFit:
         model_file_name = f'{model_version}_{output_file_name}'
             
         with h5.File(f'{model_path}/{model_file_name}', 'a') as file:    
-            try:
-                file.attrs['names'] = names
-            except RuntimeError:
-                print('Failed to save names. Likely too long.')
-                file.create_dataset('names', data=names)
+            file.create_dataset('names', data=names)
             file.close()
         
+    def build_template_grid(self, bands, model_versions=['sonora_bobcat', 'sonora_cholla'], model_path='/nvme/scratch/work/tharvey/brown_dwarfs/models/', overwrite=False, output_file_name='photometry_grid.hdf5'):
+        
+        if type(model_versions) == str:
+            model_versions = [model_versions]
 
-    def build_template_grid(self, bands, model_versions=['sonora_bobcat', 'sonora_cholla'], model_path='/nvme/scratch/work/tharvey/brown_dwarfs/models/', overwrite=False, output_file_name = 'photometry_grid.hdf5'):
-    
-        exists = False
         for model_version in model_versions:
             model_file_name = f'{model_version}_{output_file_name}'
+            file_path = f'{model_path}/{model_file_name}'
             
-            if os.path.isfile(f'{model_path}/{model_file_name}') and not overwrite:
-                exists = True
-                file = h5.File(f'{model_path}/{model_file_name}', 'r')
-                model_bands = file.attrs['bands']
+            # Check if file exists
+            if os.path.isfile(file_path) and not overwrite:
+                # Open existing file and get current bands
+                with h5.File(file_path, 'r') as file:
+                    existing_bands = list(file.attrs['bands'])
+                    missing_bands = [band for band in bands if band not in existing_bands]
+                    
+                    if not missing_bands:
+                        print(f'{model_version} template grid already exists with all requested bands. Skipping.')
+                        continue
+                        
+                    print(f'{model_version} template grid exists but missing bands: {missing_bands}. Adding them.')
+                    
+                    # Get existing data - note dimensions are (nfilters, ntemplates)
+                    template_grid = file['template_grid'][:]
+                    names = file.attrs.get('names', file['names'][:] if 'names' in file else [])
+                    scale = file.attrs['scale']
+                    
+                    # Copy meta information
+                    metas = {}
+                    if 'meta' in file:
+                        for key in file['meta']:
+                            metas[key] = file['meta'][key][:]
+                            # parse string metas if needed
+                            if any([isinstance(i, bytes) for i in metas[key]]):
+                                metas[key] = [i.decode('utf-8') for i in metas[key]]
+
+
+                
                 file.close()
-
-                # Check all bands are present
+                # Read model parameters
+                model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['path'])
+                assert len(model_table) > 0, f'No models found in {model_version}.param. Maybe remove the file and try again.'
+                assert len(model_table) == template_grid.shape[1], f'Number of models ({len(model_table)}) does not match template grid shape ({template_grid.shape[1]})'
+                
+                # Create a new combined band list, preserving the order of the input bands
+                combined_bands = []
                 for band in bands:
-                    if band not in model_bands:
-                        exists = False
-            if exists:
-                print(f'{model_version} template grid already exists. Skipping.')
-            
-            models_table = Table()
-            names = []
-        
-            model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['path'])
-            assert len(model_table) > 0, f'No models found in {model_version}.param. Maybe remove the file and try again.'
-            metas = {}
-            for pos, row in tqdm(enumerate(model_table), total=len(model_table), desc=f'Building {model_version} template grid'):
-                name = row["path"].split("/")[-1]
+                    if band not in combined_bands:
+                        combined_bands.append(band)
+                for band in existing_bands:
+                    if band not in combined_bands:
+                        combined_bands.append(band)
                 
-                names.append(name)
-                table = Table.read(f'{model_path}/{row["path"]}', names=['wav', 'flux_nu'], format='ascii.ecsv', delimiter=' ', units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
-                table['flux_njy'] = table['flux_nu'].to(u.nJy)*self.scaling_factor
-
-                meta_keys_tab = table.meta.keys()
-                for key in meta_keys_tab:
-                    if key not in metas.keys():
-                        metas[key] = []
-                        if pos > 0:
-                            metas[key] = [np.nan]*pos
-
-                convolved_fluxes = [i.value for i in self._convolve_sed(table['flux_njy'], table['wav'].to(u.um), bands, input='flux')]
-                assert len(convolved_fluxes) == len(bands), f'Convolved fluxes and bands are different lengths: {len(convolved_fluxes)} and {len(bands)}'
-                flux_column = Column(convolved_fluxes, name=name, unit=u.nJy)
+                # Create a new template grid with the correct shape (nfilters, ntemplates)
+                new_template_grid = np.zeros((len(combined_bands), template_grid.shape[1]), dtype=np.float32)
                 
-                for key in metas.keys():
-                    if key in meta_keys_tab:
-                        metas[key].append(table.meta[key])
-                    else:
-                        metas[key].append(np.nan)
-
-                models_table.add_column(flux_column)
-
-            for key in metas.keys():
-                if any([isinstance(i, str) for i in metas[key]]):
-                    metas[key] = [str(i) for i in metas[key]]
-            #metas = np.array(metas)
-
-            template_grid = models_table.as_array()
-
-            template_grid = structured_to_unstructured(template_grid, dtype=np.float32)
-
-            if not os.path.exists(model_path):
-                os.makedirs(model_path)
-
-            with h5.File(f'{model_path}/{model_file_name}', 'w') as file:    
-                file.create_dataset('template_grid', data=template_grid, compression='gzip')
-                file.attrs['bands'] = bands
-                file.attrs['scale'] = self.scaling_factor
-                try:
-                    file.attrs['names'] = names
-                except RuntimeError:
-                    print('Failed to save names. Likely too long.')
+                # Map old and new band positions
+                old_to_new_indices = {i: combined_bands.index(band) for i, band in enumerate(existing_bands)}
+                
+                # Copy existing data to the correct positions in the new grid
+                for old_idx, new_idx in old_to_new_indices.items():
+                    new_template_grid[new_idx] = template_grid[old_idx]
+                
+                # Process missing bands
+                missing_band_indices = [combined_bands.index(band) for band in missing_bands]
+                
+                for i, row in tqdm(enumerate(model_table), total=len(model_table), desc=f'Adding bands to {model_version} template grid'):
+                    name = row["path"].split("/")[-1]
+                    
+                    # Read model spectrum
+                    table = Table.read(f'{model_path}/{row["path"]}', names=['wav', 'flux_nu'], format='ascii.ecsv', delimiter=' ', units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
+                    table['flux_njy'] = table['flux_nu'].to(u.nJy)*self.scaling_factor
+                    
+                    # Update meta information if not already present
+                    meta_keys_tab = table.meta.keys()
+                    for key in meta_keys_tab:
+                        if key not in metas:
+                            metas[key] = np.full(template_grid.shape[1], np.nan)
+                        
+                    
+                    # Calculate fluxes for missing bands only
+                    convolved_fluxes = self._convolve_sed(table['flux_njy'], table['wav'].to(u.um), missing_bands, input='flux')
+                    
+                    # Place the new fluxes at the correct positions
+                    for j, band_idx in enumerate(missing_band_indices):
+                        new_template_grid[band_idx, i] = convolved_fluxes[j].value
+                
+                # Convert string metas if needed
+                for key in metas:
+                    if any([isinstance(i, str) for i in metas[key]]):
+                        metas[key] = [str(i) for i in metas[key]]
+                
+                # Save to file
+                with h5.File(file_path, 'w') as file:
+                    file.create_dataset('template_grid', data=new_template_grid, compression='gzip')
+                    file.attrs['bands'] = combined_bands
+                    file.attrs['scale'] = scale
+                    
                     file.create_dataset('names', data=names)
-                # Stores meta for dataset - temperature, log_g, met, etc. Useful for filtering models, calculating distances, etc.
-                file.create_group('meta')
-                for key in metas.keys():
-                    file['meta'][key] = metas[key]
+                    
+                    # Store metadata
+                    file.create_group('meta')
+                    for key in metas:
+                        file['meta'][key] = metas[key]
+                        
+            else:
+                # Original code for creating a new file
+                print(f'Creating new {model_version} template grid.')
+                models_table = Table()
+                names = []
+                
+                model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['path'])
+                assert len(model_table) > 0, f'No models found in {model_version}.param. Maybe remove the file and try again.'
+                metas = {}
+                for pos, row in tqdm(enumerate(model_table), total=len(model_table), desc=f'Building {model_version} template grid'):
+                    name = row["path"].split("/")[-1]
+                    
+                    names.append(name)
+                    table = Table.read(f'{model_path}/{row["path"]}', names=['wav', 'flux_nu'], format='ascii.ecsv', delimiter=' ', units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
+                    table['flux_njy'] = table['flux_nu'].to(u.nJy)*self.scaling_factor
 
+                    meta_keys_tab = table.meta.keys()
+                    for key in meta_keys_tab:
+                        if key not in metas.keys():
+                            metas[key] = []
+                            if pos > 0:
+                                metas[key] = [np.nan]*pos
+
+                    convolved_fluxes = [i.value for i in self._convolve_sed(table['flux_njy'], table['wav'].to(u.um), bands, input='flux')]
+                    assert len(convolved_fluxes) == len(bands), f'Convolved fluxes and bands are different lengths: {len(convolved_fluxes)} and {len(bands)}'
+                    flux_column = Column(convolved_fluxes, name=name, unit=u.nJy)
+                    
+                    for key in metas.keys():
+                        if key in meta_keys_tab:
+                            metas[key].append(table.meta[key])
+                        else:
+                            metas[key].append(np.nan)
+
+                    models_table.add_column(flux_column)
+
+                for key in metas.keys():
+                    if any([isinstance(i, str) for i in metas[key]]):
+                        metas[key] = [str(i) for i in metas[key]]
+
+                template_grid = models_table.as_array()
+                template_grid = structured_to_unstructured(template_grid, dtype=np.float32)
+
+                if not os.path.exists(model_path):
+                    os.makedirs(model_path)
+
+                with h5.File(file_path, 'w') as file:    
+                    file.create_dataset('template_grid', data=template_grid, compression='gzip')
+                    file.attrs['bands'] = bands
+                    file.attrs['scale'] = self.scaling_factor
+                    
+                    file.create_dataset('names', data=names)
+                    # Stores meta for dataset - temperature, log_g, met, etc. Useful for filtering models, calculating distances, etc.
+                    file.create_group('meta')
+                    for key in metas.keys():
+                        file['meta'][key] = metas[key]
+
+        # Return the last template grid and names (consistent with original function)
+        with h5.File(f'{model_path}/{model_versions[-1]}_{output_file_name}', 'r') as file:
+            template_grid = file['template_grid'][:]
+            names = file.attrs.get('names', file['names'][:] if 'names' in file else [])
+        
         return template_grid, names
 
     def _deduplicate_templates(
@@ -902,8 +988,6 @@ class StarFit:
 
         return np.array(x)
 
-
-
     def _fit_lsq(self, template_grid, filter_mask=None,  subset=None, sys_err=None, apply_extcorr=False):
     
         wave_lim = (self.min_wav, self.max_wav)
@@ -947,7 +1031,7 @@ class StarFit:
         
         # Chi-squared
         star_chi2 = np.zeros(star_tnorm.shape, dtype=np.float32)
-        for i in range(self.NSTAR):
+        for i in tqdm(range(self.NSTAR), desc='Calculating normalization and chi2 for all templates...'):
             _m = star_tnorm[:,i:i+1]*star_flux[:,i]
             if subset is None:
                 star_chi2[:,i] = (
@@ -993,7 +1077,6 @@ class StarFit:
         )
 
         return result
-
 
     def fit_catalog(self, 
                 photometry_function: Callable = None,
@@ -1192,7 +1275,6 @@ class StarFit:
             if idx >= self.idx_ranges[library][0] and idx < self.idx_ranges[library][1]:
                 return library, self.template_names[library][idx]
 
-
     def plot_best_template(self, model_idx, input_idx, ax=None, wav_unit=u.micron, flux_unit=u.nJy, **kwargs):
         library, name = self.get_template_name(model_idx)
         
@@ -1214,7 +1296,7 @@ class StarFit:
         meta = table.meta
         return meta
 
-    def color_color(self, x, y, libraries='all', unit=u.ABmag, **kwargs):
+    def color_color(self, x, y, libraries='all', unit=u.ABmag, show_fitted_galaxies=False, color_by=None, **kwargs):
 
         if libraries == 'all':
             libraries = self.libraries
@@ -1241,10 +1323,34 @@ class StarFit:
         x_data = parser.parse_and_evaluate(x, filter_data)
         y_data = parser.parse_and_evaluate(y, filter_data)
 
+        if color_by is not None:
+            pass
+
         ax.scatter(x_data, y_data, **kwargs)
         ax.set_xlabel(x)
         ax.set_ylabel(y)
         libraries_string = '\n'.join(libraries)
+
+        if show_fitted_galaxies:
+            if getattr(self, fnu, None) is None or getattr(self, efnu, None) is None or getattr(self, bands_to_fit, None) is None:
+                raise Exception('No fitted galaxies to plot.')
+           
+            # need dictionary matching self.bands_to_fit and self.fnu
+            band_data = self.fnu.T
+            band_err = self.efnu.T
+
+            band_data = {band: band_data[i] for i, band in enumerate(self.bands_to_fit)}
+            band_err = {band: band_err[i] for i, band in enumerate(self.bands_to_fit)}
+
+            if unit == u.ABmag:
+                band_data = {band: -2.5*np.log10(band_data[band] * 1e-9) + 8.9 for band in band_data}
+                band_err = {band: -2.5*np.log10(band_err[band] * 1e-9) + 8.9 for band in band_err}
+
+            x_data = parser.parse_and_evaluate(x, band_data)
+            y_data = parser.parse_and_evaluate(y, band_data)
+
+
+
 
         ax.text(0.05, 0.95, f'Libraries:\n{libraries_string}', transform=ax.transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')])
 
