@@ -221,14 +221,6 @@ class StarFit:
             self.template_names[library] = list(file['names'][:])
             self.template_names[library] = [i.decode('utf-8') for i in self.template_names[library]]
 
-            if 'meta' in file:
-                template_parameter_keys = list(file['meta'].keys())
-                for key in self.template_parameters:
-                    self.template_parameters[key] = file['meta'][key][:]
-                    # parse string metas if needed
-                    if any([isinstance(i, bytes) for i in self.template_parameters[key]]):
-                        self.template_parameters[key] = [i.decode('utf-8') for i in self.template_parameters[key]]
-
             file.close()
         
     def _build_combined_template_grid(self, libraries='all'):
