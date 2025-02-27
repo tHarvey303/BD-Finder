@@ -1466,64 +1466,67 @@ class StarFit:
         if not save_path[-3:] == ".h5":
             save_path = f"{'.'.join(save_path.split('.')[:-1])}.h5"
         
-        libraries = np.array([self.get_template_name(best_ix)[0] 
-            if not best_ix == -1 else "" for best_ix in self.star_min_ix])
-        valid_library = libraries != ""
-        unique_libraries = np.unique(libraries[valid_library])
-        libraries_IDs = {library: [] for library in unique_libraries}
-        libraries_SEDs = deepcopy(libraries_IDs)
-        for idx, library in tqdm(
-            enumerate(libraries),
-            desc = f"Loading best fit SEDs for {repr(self)}",
-            total = len(libraries),
-        ):
-            if library != "":
-                libraries_IDs[library].extend([idx])
-                libraries_SEDs[library].extend(
-                    [self.load_SED(self.star_min_ix[idx], idx, wav_unit = wav_unit, flux_unit = flux_unit)]
-                )
-
-        with h5.File(save_path, "w") as f:
-
-            for library in unique_libraries:
-                consistent_wavelengths = all(
-                    all(
-                        np.array(libraries_SEDs[library][0][0].to(wav_unit).value)
-                        == np.array(library_SEDs[0].to(wav_unit).value)
+        if not os.path.exists(save_path):
+            libraries = np.array([self.get_template_name(best_ix)[0] 
+                if not best_ix == -1 else "" for best_ix in self.star_min_ix])
+            valid_library = libraries != ""
+            unique_libraries = np.unique(libraries[valid_library])
+            libraries_IDs = {library: [] for library in unique_libraries}
+            libraries_SEDs = deepcopy(libraries_IDs)
+            for idx, library in tqdm(
+                enumerate(libraries),
+                desc = f"Loading best fit SEDs for {repr(self)}",
+                total = len(libraries),
+            ):
+                if library != "":
+                    libraries_IDs[library].extend([idx])
+                    libraries_SEDs[library].extend(
+                        [self.load_SED(self.star_min_ix[idx], idx, wav_unit = wav_unit, flux_unit = flux_unit)]
                     )
-                    for library_SEDs in libraries_SEDs[library]
-                )
-                consistent_flux_lengths = all(
-                    len(libraries_SEDs[library][0][1]) == len(library_SEDs[1])
-                    for library_SEDs in libraries_SEDs[library]
-                )
-                # ensure all wavelengths are the same
-                assert consistent_wavelengths
-                # ensure the length of the fluxes is the same
-                assert consistent_flux_lengths
 
-                h5_lib = f.create_group(library)
-                h5_lib.create_dataset(
-                    "IDs",
-                    data = np.array(libraries_IDs[library]).astype(int),
-                    compression = "gzip",
-                    dtype = int,
-                )
-                h5_lib.create_dataset(
-                    "wavs",
-                    data = np.array(libraries_SEDs[library][0][0]).astype(np.float32),
-                    compression = "gzip",
-                    dtype = np.float32,
-                )
-                h5_lib.create_dataset(
-                    "fluxes",
-                    data = np.array(libraries_SEDs[library])[:, 1, :].astype(np.float32),
-                    compression = "gzip",
-                    dtype = np.float32,
-                )
-                h5_lib.attrs["wav_unit"] = wav_unit.to_string()
-                h5_lib.attrs["flux_unit"] = flux_unit.to_string()
-            f.close()
+            with h5.File(save_path, "w") as f:
+
+                for library in unique_libraries:
+                    consistent_wavelengths = all(
+                        all(
+                            np.array(libraries_SEDs[library][0][0].to(wav_unit).value)
+                            == np.array(library_SEDs[0].to(wav_unit).value)
+                        )
+                        for library_SEDs in libraries_SEDs[library]
+                    )
+                    consistent_flux_lengths = all(
+                        len(libraries_SEDs[library][0][1]) == len(library_SEDs[1])
+                        for library_SEDs in libraries_SEDs[library]
+                    )
+                    # ensure all wavelengths are the same
+                    assert consistent_wavelengths
+                    # ensure the length of the fluxes is the same
+                    assert consistent_flux_lengths
+
+                    h5_lib = f.create_group(library)
+                    h5_lib.create_dataset(
+                        "IDs",
+                        data = np.array(libraries_IDs[library]).astype(int),
+                        compression = "gzip",
+                        dtype = int,
+                    )
+                    h5_lib.create_dataset(
+                        "wavs",
+                        data = np.array(libraries_SEDs[library][0][0]).astype(np.float32),
+                        compression = "gzip",
+                        dtype = np.float32,
+                    )
+                    h5_lib.create_dataset(
+                        "fluxes",
+                        data = np.array(libraries_SEDs[library])[:, 1, :].astype(np.float32),
+                        compression = "gzip",
+                        dtype = np.float32,
+                    )
+                    h5_lib.attrs["wav_unit"] = wav_unit.to_string()
+                    h5_lib.attrs["flux_unit"] = flux_unit.to_string()
+                f.close()
+        else:
+            print(f"{save_path} already exists. Skipping.")
 
     def get_template_name(self, model_idx):
         if model_idx == -1:
