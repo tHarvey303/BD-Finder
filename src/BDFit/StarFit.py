@@ -221,14 +221,6 @@ class StarFit:
             self.template_names[library] = list(file['names'][:])
             self.template_names[library] = [i.decode('utf-8') for i in self.template_names[library]]
 
-            if 'meta' in file:
-                template_parameter_keys = list(file['meta'].keys())
-                for key in self.template_parameters:
-                    self.template_parameters[key] = file['meta'][key][:]
-                    # parse string metas if needed
-                    if any([isinstance(i, bytes) for i in self.template_parameters[key]]):
-                        self.template_parameters[key] = [i.decode('utf-8') for i in self.template_parameters[key]]
-
             file.close()
         
     def _build_combined_template_grid(self, libraries='all'):
@@ -269,7 +261,7 @@ class StarFit:
         # From Sonora Elf Owl
         temp_range = {'Y':(275, 550), 'T':(575, 1200), 'L':(1300, 2400)}
 
-    def setup_libraries(self, path='sonora_data/', libraries = ["sonora_bobcat", "sonora_cholla", "sonora_evolution_and_photometry"]):
+    def setup_libraries(self, path='sonora_data/', libraries = ["sonora_bobcat", "sonora_cholla", "sonora_elf_owl", 'sonora_diamondback', 'low-z'], urls=file_urls):
         for library in libraries:
             # Ensure the destination folder exists, or create it if not
             new_path = path + f"/{library}/"
@@ -277,7 +269,7 @@ class StarFit:
             os.makedirs(new_path, exist_ok=True)
 
             # Fetch the Zenodo metadata for the given repository URL
-            for file_url in file_urls[library]:
+            for file_url in urls[library]:
                 if "?download=1" not in file_url:
                     file_name = 'models.tar.gz'
                 else:
@@ -289,8 +281,7 @@ class StarFit:
                     print(f'{library} files not found. Downloading from Zenodo.')
                     # Download the file
                     response = requests.get(file_url, stream=True)
-                    file_name = response.headers['Content-Disposition'].split("attachment; filename*=UTF-8''")[-1]
-
+                    file_name = response.headers['Content-Disposition'].split("attachment; filename*=UTF-8''")[-1].replace('attachment; filename=', '')
                     local_file_path = os.path.join(new_path, file_name)
 
                     if response.status_code == 200:
@@ -1620,7 +1611,59 @@ class StarFit:
         wav_range = np.ndarray.flatten(np.array(wav_range)) * u.AA
         return wav_range.min().to(u.um), wav_range.max().to(u.um)
 
-        
+    def calculate_params(self, best_fit_model, normalization):
+        '''
+
+        placeholder atm
+
+        '''
+        model = f'{sonora_path}{best_fit_model}'
+        table = Table.read(model, names=['wav', 'flux_nu'], format='ascii.ecsv', delimiter=' ', units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
+
+        teff = float(table.meta['Teff'])
+        c_o = float(table.meta['C/O'])
+        kzz = float(table.meta['Kzz'])
+        grav = np.log10(float(table.meta['grav']))
+    
+        metallicity = float(table.meta['[Fe/H]'])
+        y = float(table.meta['Y'])
+        sign = '+' if metallicity >= 0 else ''
+        path_base = f'{sonora_path}/evolution_and_photometery/evolution_and_photometery/evolution_tables/evo_tables{sign}{metallicity:.1f}/nc{sign}{metallicity:.1f}_co1.0'
+        mass_age  = f'{path_base}_mass_age'
+        mass = f'{path_base}_mass'
+        age = f'{path_base}_age'
+        lbol = f'{path_base}_lbol'
+        # find mass and age from teff and gravity
+        # In fixed mass/age table not all log-g's and teffs are present
+        table = Table.read(mass_age, format='ascii.no_header', data_start=2, guess=False, delimiter='\s')
+        [table.rename_column(f'col{pos+1}', name) for pos, name in enumerate(['Teff','log g', 'Mass','Radius','log L', 'log age'])]
+
+        mask = (table['Teff'] == teff) & (table['log g'] == grav)
+        #print(table['Teff'], teff, table['log g'], grav)
+        print(best_fit_model)
+        if len(table[mask]) == 0:
+            print('no match found')
+            print('teff', teff, 'grav', grav)
+        elif len(table[mask]) > 1:
+            print('multiple matches found')
+        else:
+            radius = table[mask]['Radius'][0] * u.Rsun
+                
+            distance = radius/np.sqrt(normalization)
+            distance = distance.to(u.kpc)
+            print('match found')
+            
+            print('teff', teff, 'grav', grav)
+
+            print(distance)
+        #print(table.colnames)
+    # meta: {C/O: '1.00', Kzz: '1.0000E+05', Teff: '200.', Y: '0.28', '[Fe/H]': '0.50', f_hole: '1.00', f_rain: '0.00', grav: '10.'}
+    # read first line of model - get temp, logg, metallicity (need to copy across)
+    # read in evolution file
+    # find radius by matching temp, logg, metallicity
+    # scale normalization
+    # Remeber factor of 1e-17 in fluxes
+    
         
 # To Do
 # Distances based on normalization
