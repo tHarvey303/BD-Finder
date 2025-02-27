@@ -8,6 +8,7 @@ import re
 import operator
 import collections
 import os
+from copy import deepcopy
 from tqdm import tqdm
 import shutil
 from pathlib import Path
@@ -195,6 +196,9 @@ class StarFit:
 
         print(f'Total models: {len(self.combined_template_grid.T)}')
 
+    def __repr__(self):
+        return f"{self.__class__.__name__}({','.join(self.libraries)})"
+
     def _load_template_grid(self, library_path, library):
 
         with h5.File(f"{library_path}/{library}_photometry_grid.hdf5", 'r') as file:
@@ -330,8 +334,8 @@ class StarFit:
         mags = mags[mask]
         wavs_um = wavs_um[mask]
 
-        if type(wavs_um[0]) == float:
-            wavs_um = [i*u.um for i in wavs_um]
+        if isinstance(wavs_um[0], float):
+            wavs_um = [i * u.um for i in wavs_um]
 
         mag_band = []
         for filt in filters:
@@ -1066,8 +1070,14 @@ class StarFit:
                     (self.fnu[subset,:] * self.zp - _m)**2 * _wht
                 ).sum(axis=1)
         
-        # "Best" stellar template
-        star_min_ix = np.nanargmin(star_chi2, axis=1)
+        # Mask rows where all elements are NaN
+        nan_rows = np.all(np.isnan(star_chi2), axis=1)
+        star_min_ix = np.full(star_chi2.shape[0], -1, dtype = int)
+        # Handle normally for valid rows
+        # Compute nanargmin only for valid rows
+        valid_rows = ~nan_rows
+        star_min_ix[valid_rows] = np.nanargmin(star_chi2[valid_rows], axis=1)
+        #star_min_ix = np.nanargmin(star_chi2, axis=1)
         star_min_chi2 = np.nanmin(star_chi2, axis=1)
         
         if subset is None:
@@ -1160,7 +1170,7 @@ class StarFit:
         if photometry_function is not None:
             fnu, efnu = photometry_function(**photometry_function_kwargs)
 
-              # Helps with fitting one object catalogues
+        # Helps with fitting one object catalogues
         fnu = np.atleast_2d(fnu)
         efnu = np.atleast_2d(efnu)
 
@@ -1168,7 +1178,6 @@ class StarFit:
         assert len(fnu[0]) == len(bands), 'Flux and error arrays must have the same number of bands.'
         assert type(fnu) is u.Quantity, 'Fluxes must be astropy Quantities.'
         assert type(efnu) is u.Quantity, 'Errors must be astropy Quantities.'
-
         
         self.catalogue_ids = catalogue_ids
         if catalogue_ids is not None:
@@ -1365,36 +1374,31 @@ class StarFit:
                     ax[0].add_patch(FancyArrowPatch((wavs[i], error_3sigma), (wavs[i], error_3sigma+length), color='crimson', zorder=10, edgecolor='k', arrowstyle='-|>, scaleA=3', mutation_scale=2))
 
         best_ix = self.star_min_ix[idx]
-        model_phot = self.star_tnorm[idx, best_ix]*self.reduced_template_grid[best_ix] * u.nJy
-        
-        plot_model_phot = model_phot.to(flux_unit, equivalencies=u.spectral_density(wavs*wav_unit)).value
-        
-        ax[0].scatter(wavs, plot_model_phot, label='Best Fit', color='navy')
 
+        if best_ix != -1:
+            print(f"No best fit found for {idx=}!")
+            model_phot = self.star_tnorm[idx, best_ix] * self.reduced_template_grid[best_ix] * u.nJy
+            plot_model_phot = model_phot.to(flux_unit, equivalencies=u.spectral_density(wavs*wav_unit)).value
+            ax[0].scatter(wavs, plot_model_phot, label='Best Fit', color='navy')
+            ax[1].scatter(wavs, (flux - model_phot) / flux_err)
+            library, name = self.get_template_name(best_ix)
+            self.plot_best_template(best_ix, idx, ax=ax[0], color='navy', wav_unit=wav_unit, flux_unit=flux_unit, linestyle='solid', lw=1)
+            params = self._extract_model_meta(library, name)
+            latex_labels = [self._latex_label(param) for param in params.keys()]
+            info_box = '\n'.join([f'{latex_labels[i]}: {params[param]}{self.param_unit(param):latex}' for i, param in enumerate(params.keys())])
+            lower_info_box = f'$\chi^2_\\nu$: {self.star_min_chinu[idx]:.2f}\n$\chi^2$: {self.star_min_chi2[idx]:.2f}'
+            info_box = f'{pname}\nBest Fit: {library.replace("_", " ").capitalize()}\n{info_box}\n{lower_info_box}'
+            ax[0].text(1.02, 0.98, info_box, transform=ax[0].transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')], bbox=dict(facecolor='w', alpha=0.5, edgecolor='black', boxstyle='square,pad=0.5'))
+            ax[1].vlines(wavs, (flux - model_phot) / flux_err, 0, color='k', alpha=0.5, linestyle='dotted')
+            ax[1].set_ylim(np.nanmin((flux - model_phot) / flux_err) - 0.2, np.nanmax((flux - model_phot)/flux_err)+0.2)
+        
         ax[0].set_ylabel(f'Flux Density ({flux_unit:latex_inline})')
         ax[1].set_xlabel(f'Wavelength ({wav_unit:latex_inline})')
-
         ax[1].set_ylabel('Residuals')
-        ax[1].scatter(wavs, (flux - model_phot)/flux_err)
         fig.subplots_adjust(hspace=0)
-
-        library, name = self.get_template_name(best_ix)
-
         ax[0].set_xlim(ax[0].get_xlim())
         ax[0].set_ylim(ax[0].get_ylim())
-
-        self.plot_best_template(best_ix, idx, ax=ax[0], color='navy', wav_unit=wav_unit, flux_unit=flux_unit, linestyle='solid', lw=1)
-
-        params = self._extract_model_meta(library, name)
-        latex_labels = [self._latex_label(param) for param in params.keys()]
-        info_box = '\n'.join([f'{latex_labels[i]}: {params[param]}{self.param_unit(param):latex}' for i, param in enumerate(params.keys())])
-        lower_info_box = f'$\chi^2_\\nu$: {self.star_min_chinu[idx]:.2f}\n$\chi^2$: {self.star_min_chi2[idx]:.2f}'
-        info_box = f'{pname}\nBest Fit: {library.replace("_", " ").capitalize()}\n{info_box}\n{lower_info_box}'
-        
-        ax[0].text(1.02, 0.98, info_box, transform=ax[0].transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')], bbox=dict(facecolor='w', alpha=0.5, edgecolor='black', boxstyle='square,pad=0.5'))
         ax[1].hlines(0, wavs[0], wavs[-1], linestyle='--', color='k')
-        ax[1].vlines(wavs, (flux - model_phot)/flux_err, 0, color='k', alpha=0.5, linestyle='dotted')
-        ax[1].set_ylim(np.nanmin((flux - model_phot)/flux_err)-0.2, np.nanmax((flux - model_phot)/flux_err)+0.2)
         ax[0].legend()
 
         return fig, ax
@@ -1423,9 +1427,11 @@ class StarFit:
             best_template_meta = {}
             meta_dtypes = []
 
-        norm = np.array([self.star_tnorm[idx, best_ix] for idx, best_ix in enumerate(self.star_min_ix)])
-        
-        phot = np.array([norm[idx] * self.reduced_template_grid[best_ix] for idx, best_ix in enumerate(self.star_min_ix)])
+        norm = np.array([self.star_tnorm[idx, best_ix] if best_ix != -1
+            else -1 for idx, best_ix in enumerate(self.star_min_ix)])
+        phot = np.array([norm[idx] * self.reduced_template_grid[best_ix]
+            if best_ix != -1 else np.full(len(self.bands_to_fit), -1)
+            for idx, best_ix in enumerate(self.star_min_ix)])
         assert phot.shape[1] == len(self.bands_to_fit)
         phot_data = {f"{band}_nJy": phot[:, i] for i, band in enumerate(self.bands_to_fit)}
 
@@ -1450,34 +1456,123 @@ class StarFit:
             tab.write(save_path, overwrite = True)
         return tab
 
-    def get_template_name(self,model_idx):
-        for library in self.libraries:
-            if model_idx >= self.idx_ranges[library][0] and model_idx < self.idx_ranges[library][1]:
-                return library, self.template_names[library][model_idx - self.idx_ranges[library][0]]
-
-    def plot_best_template(self, model_idx, input_idx, ax=None, wav_unit=u.micron, flux_unit=u.nJy, **kwargs):
-        library, name = self.get_template_name(model_idx)
+    def make_best_fit_SEDs(
+        self,
+        save_path: str,
+        wav_unit: u.Unit = u.micron,
+        flux_unit: u.Unit = u.nJy,
+    ):
+        # save as .h5
+        if not save_path[-3:] == ".h5":
+            save_path = f"{'.'.join(save_path.split('.')[:-1])}.h5"
         
+        libraries = np.array([self.get_template_name(best_ix)[0] 
+            if not best_ix == -1 else "" for best_ix in self.star_min_ix])
+        valid_library = libraries != ""
+        unique_libraries = np.unique(libraries[valid_library])
+        libraries_IDs = {library: [] for library in unique_libraries}
+        libraries_SEDs = deepcopy(libraries_IDs)
+        for idx, library in tqdm(
+            enumerate(libraries),
+            desc = f"Loading best fit SEDs for {repr(self)}",
+            total = len(libraries),
+        ):
+            if library != "":
+                libraries_IDs[library].extend([idx])
+                libraries_SEDs[library].extend(
+                    [self.load_SED(self.star_min_ix[idx], idx, wav_unit = wav_unit, flux_unit = flux_unit)]
+                )
+
+        with h5.File(save_path, "w") as f:
+
+            for library in unique_libraries:
+                consistent_wavelengths = all(
+                    all(
+                        np.array(libraries_SEDs[library][0][0].to(wav_unit).value)
+                        == np.array(library_SEDs[0].to(wav_unit).value)
+                    )
+                    for library_SEDs in libraries_SEDs[library]
+                )
+                consistent_flux_lengths = all(
+                    len(libraries_SEDs[library][0][1]) == len(library_SEDs[1])
+                    for library_SEDs in libraries_SEDs[library]
+                )
+                # ensure all wavelengths are the same
+                assert consistent_wavelengths
+                # ensure the length of the fluxes is the same
+                assert consistent_flux_lengths
+
+                h5_lib = f.create_group(library)
+                h5_lib.create_dataset(
+                    "IDs",
+                    data = np.array(libraries_IDs[library]).astype(int),
+                    compression = "gzip",
+                    dtype = int,
+                )
+                h5_lib.create_dataset(
+                    "wavs",
+                    data = np.array(libraries_SEDs[library][0][0]).astype(np.float32),
+                    compression = "gzip",
+                    dtype = np.float32,
+                )
+                h5_lib.create_dataset(
+                    "fluxes",
+                    data = np.array(libraries_SEDs[library])[:, 1, :].astype(np.float32),
+                    compression = "gzip",
+                    dtype = np.float32,
+                )
+                h5_lib.attrs["wav_unit"] = wav_unit.to_string()
+                h5_lib.attrs["flux_unit"] = flux_unit.to_string()
+            f.close()
+
+    def get_template_name(self, model_idx):
+        if model_idx == -1:
+            return "", ""
+        else:
+            for library in self.libraries:
+                if model_idx >= self.idx_ranges[library][0] and model_idx < self.idx_ranges[library][1]:
+                    return library, self.template_names[library][model_idx - self.idx_ranges[library][0]]
+
+    def load_SED(
+        self,
+        model_idx,
+        input_idx,
+        wav_unit = u.micron,
+        flux_unit = u.nJy,
+    ):
+        library, name = self.get_template_name(model_idx)
+
         path = f'{self.library_path}/{library}/resampled/{name}'
 
         best_fit_coefficients = self.star_tnorm[input_idx, model_idx]
 
         table = Table.read(path, format='ascii.ecsv', delimiter=' ', names=['wav', 'flux_nu'], units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
-        table['flux_njy'] = best_fit_coefficients * table['flux_nu'].to(u.nJy) * self.scaling_factor 
+        table['flux_njy'] = best_fit_coefficients * table['flux_nu'].to(u.nJy) * self.scaling_factor
+        
+        return table["wav"].to(wav_unit), table['flux_njy'].to(flux_unit)
+        
+
+    def plot_best_template(self, model_idx, input_idx, ax=None, wav_unit=u.micron, flux_unit=u.nJy, **kwargs):
+        
+        wav, flux = self.load_SED(model_idx, input_idx, wav_unit=wav_unit, flux_unit=flux_unit)
+        
         if ax is None:
             fig, ax = plt.subplots(1, 1, figsize=(6, 4), dpi=200)
             ax.set_xlabel(f'Wavelength ({wav_unit:latex_inline})')
             ax.set_ylabel(f'Flux Density ({flux_unit:latex_inline})')
         
-        ax.plot(table['wav'].to(wav_unit), table['flux_njy'].to(flux_unit), **kwargs)
+        ax.plot(wav, flux, **kwargs)
 
     def _get_model_path_from_lib_name(self, library, name):
         return f'{self.library_path}/{library}/resampled/{name}'
     
     def get_template_parameters(self, model_idx):
-        for library in self.libraries:
-            if model_idx >= self.idx_ranges[library][0] and model_idx < self.idx_ranges[library][1]:
-                return {key: values[model_idx - self.idx_ranges[library][0]] for key, values in self.template_parameters[library].items()}
+        if model_idx == -1:
+            return {}
+        else:
+            for library in self.libraries:
+                if model_idx >= self.idx_ranges[library][0] and model_idx < self.idx_ranges[library][1]:
+                    return {key: values[model_idx - self.idx_ranges[library][0]] for key, values in self.template_parameters[library].items()}
 
     def _extract_model_meta(self, library, name):
         path = self._get_model_path_from_lib_name(library, name)
@@ -1585,8 +1680,6 @@ class StarFit:
             
             param_use = param_aliases.get(param.lower(), param.lower())
 
-
-            
             # common aliases
 
             if param.lower() in ['teff', 'temp', 'T']:
