@@ -1461,12 +1461,21 @@ class StarFit:
         save_path: str,
         wav_unit: u.Unit = u.micron,
         flux_unit: u.Unit = u.nJy,
+        IDs: Optional[List[int]] = None,
     ):
         # save as .h5
         if not save_path[-3:] == ".h5":
             save_path = f"{'.'.join(save_path.split('.')[:-1])}.h5"
         
         if not os.path.exists(save_path):
+
+            if IDs is not None:
+                assert len(IDs) == len(self.star_min_ix), \
+                    "IDs must be the same length as the number of objects."
+                IDs = np.array(IDs).astype(int)
+            else:
+                IDs = np.arange(len(self.star_min_ix)).astype(int)
+
             libraries = np.array([self.get_template_name(best_ix)[0] 
                 if not best_ix == -1 else "" for best_ix in self.star_min_ix])
             valid_library = libraries != ""
@@ -1479,7 +1488,7 @@ class StarFit:
                 total = len(libraries),
             ):
                 if library != "":
-                    libraries_IDs[library].extend([idx])
+                    libraries_IDs[library].extend([IDs[idx]])
                     libraries_SEDs[library].extend(
                         [self.load_SED(self.star_min_ix[idx], idx, wav_unit = wav_unit, flux_unit = flux_unit)]
                     )
