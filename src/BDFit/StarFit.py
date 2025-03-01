@@ -1363,7 +1363,7 @@ class StarFit:
 
         if flux_unit == u.ABmag:
             
-            # plot any negative fluxes as  3 sigma upper limits
+            # plot any negative fluxes as 3 sigma upper limits
             for i, f in enumerate(flux):
                 if f < 0:
                     from matplotlib.patches import FancyArrowPatch
@@ -1376,7 +1376,6 @@ class StarFit:
         best_ix = self.star_min_ix[idx]
 
         if best_ix != -1:
-            print(f"No best fit found for {idx=}!")
             model_phot = self.star_tnorm[idx, best_ix] * self.reduced_template_grid[best_ix] * u.nJy
             plot_model_phot = model_phot.to(flux_unit, equivalencies=u.spectral_density(wavs*wav_unit)).value
             ax[0].scatter(wavs, plot_model_phot, label='Best Fit', color='navy')
@@ -1391,7 +1390,9 @@ class StarFit:
             ax[0].text(1.02, 0.98, info_box, transform=ax[0].transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')], bbox=dict(facecolor='w', alpha=0.5, edgecolor='black', boxstyle='square,pad=0.5'))
             ax[1].vlines(wavs, (flux - model_phot) / flux_err, 0, color='k', alpha=0.5, linestyle='dotted')
             ax[1].set_ylim(np.nanmin((flux - model_phot) / flux_err) - 0.2, np.nanmax((flux - model_phot)/flux_err)+0.2)
-        
+        else:
+            print(f"No best fit found for {idx=}!")
+
         ax[0].set_ylabel(f'Flux Density ({flux_unit:latex_inline})')
         ax[1].set_xlabel(f'Wavelength ({wav_unit:latex_inline})')
         ax[1].set_ylabel('Residuals')
