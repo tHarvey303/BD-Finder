@@ -242,13 +242,14 @@ class StarFit:
         for library in libraries:
             assert set(self.model_filters).issubset(self.template_bands[library]), f"Model filters not found in {library} template bands."
             idxs[library] = np.array([self.template_bands[library].index(band) for band in self.model_filters])
-            assert len(self.model_filters) == len(idxs[library]), f"Model filters and idxs are different lengths: {len(model_filters)} and {len(idxs[library])}"
+            assert len(self.model_filters) == len(idxs[library]), f"Model filters and idxs are different lengths: {len(self.model_filters)} and {len(idxs[library])}"
         # get the template grid for each library
         template_grids = [self.template_grids[library] for library in libraries]
         idxs_order = [idxs[library] for library in libraries]
 
         # vstack the template grids in the order of self.model_filters
         self.combined_template_grid = np.hstack([template_grid[idx, :] for template_grid, idx in zip(template_grids, idxs_order)])
+
         # make idx range dictionary
         idx_ranges = {}
         start = 0
@@ -429,8 +430,6 @@ class StarFit:
                             # parse string metas if needed
                             if any([isinstance(i, bytes) for i in metas[key]]):
                                 metas[key] = [i.decode('utf-8') for i in metas[key]]
-
-
                 
                 file.close()
                 # Read model parameters
@@ -1056,10 +1055,10 @@ class StarFit:
         _den= np.dot(1*_wht, star_flux**2)
         _den[_den == 0] = 0
         star_tnorm = _num/_den
-        
+
         # Chi-squared
         star_chi2 = np.zeros(star_tnorm.shape, dtype=np.float32)
-        for i in tqdm(range(self.NSTAR), desc='Calculating normalization and chi2 for all templates...'):
+        for i in tqdm(range(self.NSTAR), desc='Calculating chi2 for all templates...'):
             _m = star_tnorm[:,i:i+1]*star_flux[:,i]
             if subset is None:
                 star_chi2[:,i] = (
@@ -1167,6 +1166,7 @@ class StarFit:
         if bands == 'internal':
             bands = self.model_filters
         
+        
         if photometry_function is not None:
             fnu, efnu = photometry_function(**photometry_function_kwargs)
 
@@ -1178,7 +1178,7 @@ class StarFit:
         assert len(fnu[0]) == len(bands), 'Flux and error arrays must have the same number of bands.'
         assert type(fnu) is u.Quantity, 'Fluxes must be astropy Quantities.'
         assert type(efnu) is u.Quantity, 'Errors must be astropy Quantities.'
-        
+
         self.catalogue_ids = catalogue_ids
         if catalogue_ids is not None:
             assert len(catalogue_ids) == len(fnu), 'Catalogue IDs must be the same length as the fluxes.'
@@ -1196,6 +1196,7 @@ class StarFit:
         split_model_filters = [i.split('.')[-1] for i in self.model_filters]
 
         fitted_bands = []
+        phot_bands = []
         band_idx = []
         band_compar_dict = {}
         for band in bands:
@@ -1215,6 +1216,7 @@ class StarFit:
                     self.filter_ranges[band] = self.filter_ranges[full_band]
                     self.filter_instruments[band] = self.filter_instruments[full_band]
                     band_compar_dict[band] = full_band
+                    phot_bands.append(full_band)
                     fitted_bands.append(full_band)
                     band_idx.append(match_idx)
                 else:
@@ -1222,6 +1224,7 @@ class StarFit:
                     print(f'Warning! Band {band} not in model_filters. Removing from bands to fit.')
                     bands.remove(band)
             else:
+                phot_bands.append(band)
                 fitted_bands.append(band)
                 band_compar_dict[band] = band
                 band_idx.append(self.model_filters.index(band))
@@ -1271,10 +1274,8 @@ class StarFit:
         mask = np.array([i in fitted_bands for i in self.model_filters])
         # Check actual bands are in the same order as self.model_filters
         self.bands_to_fit = fitted_bands
-        # Make sure fnu and efnu are in the same order as self.model_filters - don't need same position, just same order
-        idxs = [self.model_filters.index(band) for band in fitted_bands]
-        # convert to order - e.g. 0, 1, 2, 3, 4, 5 -> 0, 1, 2, 3, 4, 5
-        idxs = np.argsort(idxs)
+
+        idxs = np.array([i for i, band in enumerate(phot_bands) if band in fitted_bands])
 
         print(f'Fitting {len(fitted_bands)} bands: {fitted_bands}')
 
