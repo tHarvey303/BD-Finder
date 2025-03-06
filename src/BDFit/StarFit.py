@@ -1498,6 +1498,23 @@ class StarFit:
             with h5.File(save_path, "w") as f:
 
                 for library in unique_libraries:
+                    # ensure the length of arrays are all the same, if not zero pad from the start
+                    SED_lengths = np.array([len(SED[0]) for SED in libraries_SEDs[library]])
+                    while not all(SED_lengths[0] == SED_length for SED_length in SED_lengths):
+                        # zero pad the shorter arrays
+                        longest_length_indices = np.where(SED_lengths == max(SED_lengths))[0]
+                        for i, (SED, length) in enumerate(zip(libraries_SEDs[library], SED_lengths)):
+                            if i not in longest_length_indices:
+                                # TODO: ensure mis-matching wavelengths occurs at the start
+                                new_SED_wavs = libraries_SEDs[library][longest_length_indices[0]][0]
+                                new_SED_fluxes = np.concatenate([np.zeros(SED_lengths[longest_length_indices[0]] - length), SED[1]])
+                                # zero pad the shorter array starting from the start
+                                libraries_SEDs[library][i] = (new_SED_wavs, new_SED_fluxes)
+                        SED_lengths = np.array([len(SED[0]) for SED in libraries_SEDs[library]])
+                        if all(SED_lengths[0] == SED_length for SED_length in SED_lengths):
+                            break
+
+                    # ensure all wavelengths are the same
                     consistent_wavelengths = all(
                         all(
                             np.array(libraries_SEDs[library][0][0].to(wav_unit).value)
@@ -1505,12 +1522,12 @@ class StarFit:
                         )
                         for library_SEDs in libraries_SEDs[library]
                     )
+                    assert consistent_wavelengths
                     consistent_flux_lengths = all(
                         len(libraries_SEDs[library][0][1]) == len(library_SEDs[1])
                         for library_SEDs in libraries_SEDs[library]
                     )
-                    # ensure all wavelengths are the same
-                    assert consistent_wavelengths
+
                     # ensure the length of the fluxes is the same
                     assert consistent_flux_lengths
 
