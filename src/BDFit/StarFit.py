@@ -6,8 +6,12 @@ import glob
 from typing import Tuple, List, Dict, Union, Any, Iterator, Optional, Callable
 import re
 import operator
+from scipy.interpolate import RegularGridInterpolator
 import collections
 import os
+import fnmatch
+from numpy.lib.recfunctions import structured_to_unstructured
+from matplotlib.colors import LogNorm
 from copy import deepcopy
 from tqdm import tqdm
 import shutil
@@ -25,7 +29,8 @@ from numpy.lib.recfunctions import structured_to_unstructured
 from astroquery.svo_fps import SvoFps
 import matplotlib.patheffects as pe
 from itertools import product
-
+from astropy.coordinates import SkyCoord, Galactic, Galactocentric
+     
 
 
 # Path to download models - currently supports Sonora Bobcat, Cholla, Elf Owl, Diamondback and the Low-Z models
@@ -199,6 +204,126 @@ class StarFit:
     def __repr__(self):
         return f"{self.__class__.__name__}({','.join(self.libraries)})"
 
+    def param_abrev(self, param, library):
+        if library == 'sonora_bobcat':
+            vals = {'temp':'t', 'log_g':'g', 'met':'m', 'co':'co'}
+        else:
+            raise NotImplementedError(f'Library {library} not supported.')
+
+        return vals[param]
+
+
+    def select_photometry_table(self, model_idx):
+        library, name = self.get_template_name(model_idx)
+        parameters = self.get_template_parameters(model_idx)
+
+        if library == 'sonora_bobcat':
+            if parameters['co'] not in ['', "b'nan'"]:
+                table_name = 'flux_table_JWST_m+0.0_co{}'.format(parameters['co'])
+            else:
+                met = parameters["met"]
+                if met == '0.0':
+                    met = '+0.0'
+                table_name = f'flux_table_JWST{met}'
+            
+            from astropy.io import ascii
+            path = f'{self.library_path}/{library}_evolution/evolution_and_photometery/photometry_tables/{table_name}'
+            
+            tab_col_names = ascii.read(path, format='fixed_width', fast_reader=False, guess=False, delimiter='  ', header_start=4, data_start=5, data_end=5)
+            tab = ascii.read(path, format='basic', fast_reader=False, guess=False, delimiter='\s', header_start=None, data_start=5, names=tab_col_names.colnames)
+            tab['R/Rsun'] = [float(str(i).replace('*', '')) for i in tab['R/Rsun']]
+            # Round to avoid having 1201, 1200 be separate values. Rounds to nearest 5 which should be ok.
+            tab['Teff'] = np.round(tab['Teff']*2, -1)/2
+        else:
+            return None, None
+        return tab, path
+
+
+    def interpolate_stellar_parameters(self, teff, logg, mass_interp, radius_interp):
+        """
+        Interpolate mass and radius for given temperature and log g values
+        
+        Args:
+            teff (float or array): Effective temperature
+            logg (float or array): Surface gravity (log g)
+            mass_interp: Mass interpolator
+            radius_interp: Radius interpolator
+            
+        Returns:
+            tuple: (mass, radius) - Interpolated values
+        """
+        # Create input points for interpolation
+        if np.isscalar(teff) and np.isscalar(logg):
+            points = np.array([[teff, logg]])
+        else:
+            # Handle array inputs
+            teff = np.asarray(teff)
+            logg = np.asarray(logg)
+            if teff.shape != logg.shape:
+                raise ValueError("teff and logg must have the same shape")
+            
+            # Reshape arrays into points for interpolation
+            points = np.column_stack((teff.flatten(), logg.flatten()))
+        
+        # Interpolate values
+        mass = mass_interp(points)
+        radius = radius_interp(points)
+        
+        # Reshape back to original shape if needed
+        if not np.isscalar(teff):
+            mass = mass.reshape(teff.shape)
+            radius = radius.reshape(teff.shape)
+        
+        return mass, radius
+
+
+    def get_mass_radius(self, model_idx, plot_grid=False):
+        library, name = self.get_template_name(model_idx)
+        table, path = self.select_photometry_table(model_idx)
+        if table is None:
+            return np.nan, np.nan
+
+        parameters = self.get_template_parameters(model_idx)
+
+        if library == 'sonora_bobcat':
+            colnames = {'temp':'Teff', 'log_g':'log g', 'mass':'mass', 'radius':'R/Rsun'}
+            logg = float(parameters['log_g'])
+            temp = float(parameters['temp'])
+
+            try:
+                [table.rename_column(colnames[key], key) for key in colnames.keys()]
+            except:
+                pass
+
+            mass_interpolator, radius_interpolator, (temp_unique, logg_unique) = self.create_stellar_interpolator(table)
+
+            if plot_grid:
+                filename = os.path.basename(path)
+                self.visualize_grid(table, temp_unique, logg_unique, mass_interpolator, radius_interpolator, plot_name=f"{library}_{filename}_mass_radius_grid.png")
+            
+            #+2 to convert from cm/s^2 to m/s^2
+            mass, radius = self.interpolate_stellar_parameters(temp, np.log10(logg)+2.0, mass_interpolator, radius_interpolator)
+            mass = mass[0] * u.Mjupiter
+            radius = radius[0] * u.Rsun
+        else:
+            print(f'Warning! Library {library} not supported for mass and radius estimates.')
+            mass = np.nan
+            radius = np.nan
+
+        return mass, radius
+
+
+    def get_physical_params(self, idx, norm):
+        mass, radius = self.get_mass_radius(idx)
+        if np.isnan(mass) or np.isnan(radius):
+            return np.nan, np.nan, np.nan
+
+        # norm is R^2/d^2 
+        distance = np.sqrt(radius**2 / (norm*self.scaling_factor))
+        distance = distance.to(u.pc)
+
+        return mass, radius, distance
+            
     def _load_template_grid(self, library_path, library):
 
         with h5.File(f"{library_path}/{library}_photometry_grid.hdf5", 'r') as file:
@@ -714,6 +839,7 @@ class StarFit:
 
                 self.transmission_profiles[band] = (wav, trans)
 
+
     def model_parameter_ranges(self, model_version='sonora_bobcat'):
         return self.model_parameters[model_version]
     
@@ -1024,16 +1150,22 @@ class StarFit:
         star_flux = np.array(template_grid).T
         self.NSTAR = star_flux.shape[1]
 
+        fnu = self.fnu.copy()
+        efnu = self.efnu.copy()
+
+        fnu[~self.ok_data] = -99 #np.ma.masked_array(self.fnu, mask=~self.ok_data)
+        efnu[~self.ok_data] = -99 #np.ma.masked_array(self.efnu, mask=~self.ok_data)
+
         # Least squares normalization of stellar templates
         if subset is None:
-            _wht = 1/(self.efnu**2+(sys_err*self.fnu)**2)
+            _wht = 1/(efnu**2+(sys_err*fnu)**2)
         
             _wht /= self.zp**2
             _wht[(~self.ok_data) | (self.efnu <= 0)] = 0
 
         else:
             _wht = 1.0 / (
-                self.efnu[subset,:]**2 + (sys_err * self.fnu[subset,:])**2
+                efnu[subset,:]**2 + (sys_err * fnu[subset,:])**2
             )
 
             _wht /= self.zp**2
@@ -1047,26 +1179,28 @@ class StarFit:
         _wht[:, clip_filter] = 0'''
             
         if subset is None:
-            _num = np.dot(self.fnu * self.zp * _wht, star_flux)
+            _num = np.dot(fnu * self.zp * _wht, star_flux)
         else:
-            _num = np.dot(self.fnu[subset,:] * self.zp * _wht, star_flux)
+            _num = np.dot(fnu[subset,:] * self.zp * _wht, star_flux)
             
         _den= np.dot(1*_wht, star_flux**2)
         _den[_den == 0] = 0
         star_tnorm = _num/_den
 
+
+        
         # Chi-squared
         star_chi2 = np.zeros(star_tnorm.shape, dtype=np.float32)
         for i in tqdm(range(self.NSTAR), desc='Calculating chi2 for all templates...'):
             _m = star_tnorm[:,i:i+1]*star_flux[:,i]
             if subset is None:
-                star_chi2[:,i] = (
-                    (self.fnu * self.zp - _m)**2 * _wht
-                ).sum(axis=1)
+                star_chi2[:,i] = np.sum(
+                    (fnu * self.zp - _m)**2 * _wht
+                , axis=1)
             else:
-                star_chi2[:,i] = (
-                    (self.fnu[subset,:] * self.zp - _m)**2 * _wht
-                ).sum(axis=1)
+                star_chi2[:,i] = np.sum(
+                    (fnu[subset,:] * self.zp - _m)**2 * _wht
+                , axis=1)
         
         # Mask rows where all elements are NaN
         nan_rows = np.all(np.isnan(star_chi2), axis=1)
@@ -1268,7 +1402,7 @@ class StarFit:
         
         grid = self._build_combined_template_grid(libraries_to_fit)
 
-        print(f'Fitting with {", ".join(libraries_to_fit)} libraries with {len(grid)} templates.')
+        print(f'Fitting with {", ".join(libraries_to_fit)} libraries with {np.shape(grid)[1]} templates.')
 
         mask = np.array([i in fitted_bands for i in self.model_filters])
         # Check actual bands are in the same order as self.model_filters
@@ -1278,11 +1412,16 @@ class StarFit:
 
         print(f'Fitting {len(fitted_bands)} bands: {fitted_bands}')
 
+
+        # Generate ok_data to mask nan fluxes and nan errors
+        ok_data = np.isfinite(self.fnu) & np.isfinite(self.efnu) & (self.efnu > 0)
+        
+
         self.NFILT = len(fitted_bands)
         self.fnu = self.fnu[:, idxs]
         self.efnu = self.efnu[:, idxs]
         self.zp = np.ones_like(self.fnu)
-        self.ok_data = np.ones_like(self.fnu, dtype=bool)
+        self.ok_data = ok_data
         self.nusefilt = self.ok_data.sum(axis=1)
         self.mask = mask
 
@@ -1313,6 +1452,30 @@ class StarFit:
 
         return fit_results
 
+    def get_catalog_physical_params(self):
+        assert hasattr(self, 'star_tnorm'), 'Fit the catalogue first.'
+        assert hasattr(self, 'star_min_ix'), 'Fit the catalogue first.'
+        
+        distances = np.zeros(len(self.star_min_ix))
+        masses = np.zeros(len(self.star_min_ix))
+        radii = np.zeros(len(self.star_min_ix))
+
+        for i in range(len(self.star_min_ix)):
+            norm = self.star_tnorm[i, self.star_min_ix[i]]
+            mass, radius, distance = self.get_physical_params(self.star_min_ix[i], norm)
+            if mass is not None:
+                masses[i] = mass.to(u.M_sun).value
+            if radius is not None:
+                radii[i] = radius.to(u.R_sun).value
+            if distance is not None:
+                distances[i] = distance.to(u.pc).value
+
+        distances = distances * u.pc
+        masses = masses * u.M_sun
+        radii = radii * u.R_sun
+
+        return distances, masses, radii
+
     def load_results_from_pickle(self, path):
         import pickle
         with open(path, 'rb') as f:
@@ -1324,7 +1487,7 @@ class StarFit:
 
             setattr(self, key, results[key])
  
-    def plot_fit(self, idx=None, cat_id=None, wav_unit=u.micron, flux_unit=u.nJy):
+    def plot_fit(self, idx=None, cat_id=None, wav_unit=u.micron, flux_unit=u.nJy, override_template_ix=None):
 
         assert idx is not None or cat_id is not None, 'Provide either an index or a catalogue id. (if catalogue IDs were provided during fitting'
 
@@ -1361,6 +1524,8 @@ class StarFit:
         ax[0].errorbar(wavs, plot_flux, yerr=err, fmt='o', label='Data',
                         color='crimson', markeredgecolor='k', zorder=10)
 
+        ax[0].set_xlim(ax[0].get_xlim())
+
         if flux_unit == u.ABmag:
             
             # plot any negative fluxes as 3 sigma upper limits
@@ -1373,7 +1538,10 @@ class StarFit:
                     length = abs(ax[0].get_ylim()[1] - ax[0].get_ylim()[0])*0.15
                     ax[0].add_patch(FancyArrowPatch((wavs[i], error_3sigma), (wavs[i], error_3sigma+length), color='crimson', zorder=10, edgecolor='k', arrowstyle='-|>, scaleA=3', mutation_scale=2))
 
-        best_ix = self.star_min_ix[idx]
+        if override_template_ix is not None:
+            best_ix = override_template_ix
+        else:
+            best_ix = self.star_min_ix[idx]
 
         if best_ix != -1:
             model_phot = self.star_tnorm[idx, best_ix] * self.reduced_template_grid[best_ix] * u.nJy
@@ -1384,9 +1552,15 @@ class StarFit:
             self.plot_best_template(best_ix, idx, ax=ax[0], color='navy', wav_unit=wav_unit, flux_unit=flux_unit, linestyle='solid', lw=1)
             params = self._extract_model_meta(library, name)
             latex_labels = [self._latex_label(param) for param in params.keys()]
+
+            mass, radius, distance = self.get_physical_params(best_ix, self.star_tnorm[idx, best_ix])
             info_box = '\n'.join([f'{latex_labels[i]}: {params[param]}{self.param_unit(param):latex}' for i, param in enumerate(params.keys())])
             lower_info_box = f'$\chi^2_\\nu$: {self.star_min_chinu[idx]:.2f}\n$\chi^2$: {self.star_min_chi2[idx]:.2f}'
             info_box = f'{pname}\nBest Fit: {library.replace("_", " ").capitalize()}\n{info_box}\n{lower_info_box}'
+            if not np.isnan(mass):
+                lowest_info_box=f'Mass: {mass.to(u.Msun).to_string(format="latex", precision=3)}\nRadius: {radius.to_string(format="latex", precision=3)}\nDistance: {distance.to(u.kpc).to_string(format="latex", precision=3)}'
+                info_box = f'{info_box}\n{lowest_info_box}'
+
             ax[0].text(1.02, 0.98, info_box, transform=ax[0].transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')], bbox=dict(facecolor='w', alpha=0.5, edgecolor='black', boxstyle='square,pad=0.5'))
             ax[1].vlines(wavs, (flux - model_phot) / flux_err, 0, color='k', alpha=0.5, linestyle='dotted')
             ax[1].set_ylim(np.nanmin((flux - model_phot) / flux_err) - 0.2, np.nanmax((flux - model_phot)/flux_err)+0.2)
@@ -1668,6 +1842,8 @@ class StarFit:
     
     def filter_template_grid_by_parameter(self, parameter, value, exclude_unparametrized=True, combine='and'):
         '''
+        TODO: FINISH THIS
+
         Filter the template grid by a parameter value. E.g. filter by temperature, log g, etc.
 
         Parameters
@@ -1735,64 +1911,248 @@ class StarFit:
         wav_range = np.ndarray.flatten(np.array(wav_range)) * u.AA
         return wav_range.min().to(u.um), wav_range.max().to(u.um)
 
-    def calculate_params(self, best_fit_model, normalization):
-        '''
 
-        placeholder atm
-
-        '''
-        model = f'{sonora_path}{best_fit_model}'
-        table = Table.read(model, names=['wav', 'flux_nu'], format='ascii.ecsv', delimiter=' ', units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
-
-        teff = float(table.meta['Teff'])
-        c_o = float(table.meta['C/O'])
-        kzz = float(table.meta['Kzz'])
-        grav = np.log10(float(table.meta['grav']))
-    
-        metallicity = float(table.meta['[Fe/H]'])
-        y = float(table.meta['Y'])
-        sign = '+' if metallicity >= 0 else ''
-        path_base = f'{sonora_path}/evolution_and_photometery/evolution_and_photometery/evolution_tables/evo_tables{sign}{metallicity:.1f}/nc{sign}{metallicity:.1f}_co1.0'
-        mass_age  = f'{path_base}_mass_age'
-        mass = f'{path_base}_mass'
-        age = f'{path_base}_age'
-        lbol = f'{path_base}_lbol'
-        # find mass and age from teff and gravity
-        # In fixed mass/age table not all log-g's and teffs are present
-        table = Table.read(mass_age, format='ascii.no_header', data_start=2, guess=False, delimiter='\s')
-        [table.rename_column(f'col{pos+1}', name) for pos, name in enumerate(['Teff','log g', 'Mass','Radius','log L', 'log age'])]
-
-        mask = (table['Teff'] == teff) & (table['log g'] == grav)
-        #print(table['Teff'], teff, table['log g'], grav)
-        print(best_fit_model)
-        if len(table[mask]) == 0:
-            print('no match found')
-            print('teff', teff, 'grav', grav)
-        elif len(table[mask]) > 1:
-            print('multiple matches found')
-        else:
-            radius = table[mask]['Radius'][0] * u.Rsun
-                
-            distance = radius/np.sqrt(normalization)
-            distance = distance.to(u.kpc)
-            print('match found')
+    def create_stellar_interpolator(self, table):
+        """
+        Create interpolators for stellar parameters from a DataFrame with columns:
+        Teff, logg, mass, radius
+        
+        Args:
+            table (astropy.table.Table): Table with columns Teff, logg, mass, radius
             
-            print('teff', teff, 'grav', grav)
+        Returns:
+            tuple: (mass_interpolator, radius_interpolator) - RegularGridInterpolator objects
+        """
+        # Get unique temperature and log_g values to create the grid
+        temp_unique = np.sort(np.unique(table['temp']))
+        logg_unique = np.sort(np.unique(table['log_g']))
+        
+        # Check if grid is regular
+        if len(temp_unique) * len(logg_unique) != len(table):
+            print(f"Warning: Data may not form a regular grid! Expected {len(temp_unique) * len(logg_unique)} points, got {len(table)}")
+        
+        # Create empty 2D arrays for mass and radius
+        mass_grid = np.full((len(temp_unique), len(logg_unique)), np.nan)
+        radius_grid = np.full((len(temp_unique), len(logg_unique)), np.nan)
+        
+        # Create dictionaries to map values to indices
+        temp_to_idx = {temp: i for i, temp in enumerate(temp_unique)}
+        logg_to_idx = {logg: i for i, logg in enumerate(logg_unique)}
+        
+        # Fill the grids with values
+        for row in table:
+            i = temp_to_idx[row['temp']]
+            j = logg_to_idx[row['log_g']]
+            mass_grid[i, j] = row['mass']
+            radius_grid[i, j] = row['radius']
 
-            print(distance)
-        #print(table.colnames)
-    # meta: {C/O: '1.00', Kzz: '1.0000E+05', Teff: '200.', Y: '0.28', '[Fe/H]': '0.50', f_hole: '1.00', f_rain: '0.00', grav: '10.'}
-    # read first line of model - get temp, logg, metallicity (need to copy across)
-    # read in evolution file
-    # find radius by matching temp, logg, metallicity
-    # scale normalization
-    # Remeber factor of 1e-17 in fluxes
+        # Delete any rows or columns where less than 10% of the values are filled
+
+        idx_to_remove = []
+        for i in range(len(temp_unique)):
+            if np.isnan(mass_grid[i]).sum() > 0.9 * len(logg_unique):
+                mass_grid[i] = np.nan
+                radius_grid[i] = np.nan
+                idx_to_remove.append(i)
+                print(f"Removing temperature value {temp_unique[i]}")
+        
+        temp_unique = np.delete(temp_unique, idx_to_remove)
+        
+        idx_to_remove = []
+        for j in range(len(logg_unique)):
+            if np.isnan(mass_grid[:, j]).sum() > 0.9 * len(temp_unique):
+                mass_grid[:, j] = np.nan
+                radius_grid[:, j] = np.nan
+                idx_to_remove.append(j)
+                print(f"Removing log g value {logg_unique[j]}")
+        
+        logg_unique = np.delete(logg_unique, idx_to_remove)
+                
+        # Delete all all NaN rows and columns
+        mass_grid = mass_grid[~np.all(np.isnan(mass_grid), axis=1)]
+        mass_grid =  mass_grid[:, ~np.all(np.isnan(mass_grid), axis=0)]
+        
+        radius_grid = radius_grid[~np.all(np.isnan(radius_grid), axis=1)]
+        radius_grid =  radius_grid[:, ~np.all(np.isnan(radius_grid), axis=0)]
+
+        # Create interpolators for mass and radius
+        mass_interpolator = RegularGridInterpolator(
+            (temp_unique, logg_unique), mass_grid,
+            bounds_error=False, fill_value=None
+        )
+        
+        radius_interpolator = RegularGridInterpolator(
+            (temp_unique, logg_unique), radius_grid,
+            bounds_error=False, fill_value=None
+        )
+        
+        return mass_interpolator, radius_interpolator, (temp_unique, logg_unique)
+    
+
+    def visualize_grid(self, table, temp_unique, logg_unique, mass_interp, radius_interp, plot_name = 'stellar_parameters_visualization.png'):
+        """
+        Create visualization of the interpolation grid and results
+        """
+        # Create a finer grid for visualization
+        temp_fine = np.linspace(temp_unique.min(), temp_unique.max(), 300)
+        logg_fine = np.linspace(logg_unique.min(), logg_unique.max(), 100)
+        temp_grid, logg_grid = np.meshgrid(temp_fine, logg_fine)
+        
+        # Interpolate mass and radius on fine grid
+        mass_fine, radius_fine = self.interpolate_stellar_parameters(
+            temp_grid.flatten(), logg_grid.flatten(), mass_interp, radius_interp
+        )
+        mass_fine = mass_fine.reshape(temp_grid.shape)
+        radius_fine = radius_fine.reshape(temp_grid.shape)
+        
+        # Create figure with subplots
+        fig = plt.figure(figsize=(15, 10), facecolor='white', dpi=200)
+        
+        # Plot 1: Mass contour plot
+        ax1 = fig.add_subplot(221)
+        contour1 = ax1.contourf(temp_fine, logg_fine, mass_fine, 20, cmap='viridis', norm=LogNorm())
+        ax1.set_xlabel('Effective Temperature (K)')
+        ax1.set_ylabel('log g')
+        ax1.set_title('Stellar Mass (M♃) Contour Plot')
+        ax1.set_xlim(temp_unique.min(), temp_unique.max())
+        ax1.set_ylim(logg_unique.min(), logg_unique.max())
+        plt.colorbar(contour1, ax=ax1, label='Mass (M♃)')
+        
+        # Add data points to mass plot
+        ax1.scatter(table['temp'], table['log_g'], c='red', s=10, alpha=0.5)
+        
+        # Plot 2: Radius contour plot
+        ax2 = fig.add_subplot(222)
+        contour2 = ax2.contourf(temp_fine, logg_fine, radius_fine, 20, cmap='plasma')
+        ax2.set_xlabel('Effective Temperature (K)')
+        ax2.set_ylabel('log g')
+        ax2.set_title('Stellar Radius (R☉) Contour Plot')
+        ax2.set_xlim(temp_unique.min(), temp_unique.max())
+        ax2.set_ylim(logg_unique.min(), logg_unique.max())
+        plt.colorbar(contour2, ax=ax2, label='Radius (R☉)')
+        
+        # Plot 3: 3D surface plot for Mass
+        ax3 = fig.add_subplot(223, projection='3d')
+        surf1 = ax3.plot_surface(temp_grid, logg_grid, mass_fine, cmap='viridis', alpha=0.8)
+        ax3.set_xlabel('Effective Temperature (K)')
+        ax3.set_ylabel('log g')
+        ax3.set_zlabel('Mass (M♃)')
+        ax3.set_title('Stellar Mass 3D Surface')
+        
+        # Plot 4: 3D surface plot for Radius
+        ax4 = fig.add_subplot(224, projection='3d')
+        surf2 = ax4.plot_surface(temp_grid, logg_grid, radius_fine, cmap='plasma', alpha=0.8)
+        ax4.set_xlabel('Effective Temperature (K)')
+        ax4.set_ylabel('log g')
+        ax4.set_zlabel('Radius (R☉)')
+        ax4.set_title('Stellar Radius 3D Surface')
+        
+        plt.tight_layout()
+        plt.savefig(plot_name, dpi=300)
+        plt.close(fig)
+        
+        print(f"Grid visualization saved to {plot_name}")
+
+
+    def plot_brown_dwarf_locations(self, ra, dec, distances=None,
+                            idxs='all', coord_system='galactic', plot_3d=False, ax=None,
+                            mw_fit_kwargs={'radius':10 * u.kpc,
+                                        'unit':u.kpc,
+                                        'coord':"galactocentric",
+                                        'annotation':True,
+                                        'figsize':(10, 8)},                 
+                             **kwargs):
+
+        assert idxs is not None or distance is not None, 'Provide either an index or a distance.'
+        assert type(distances) is u.Quantity if distances is not None else True, 'Distance must be a Quantity.'
+        assert coord_system in ['galactic', 'equatorial', 'galactocentric'], 'Coordinate system must be either galactic, galactocentric or equatorial.'
+        assert len(ra) == len(dec), 'RA and Dec must be the same length.'
+
+        if idxs == 'all':
+            idxs = np.arange(len(ra))
+
+        if distances is None and idxs is not None:
+            assert hasattr(self, 'star_min_ix'), 'Fit the catalogue first.'
+            assert hasattr(self, 'star_tnorm'), 'Fit the catalogue first.'
+
+            distances = [self.get_physical_params(self.star_min_ix[idx], self.star_tnorm[idx, self.star_min_ix[idx]])[2] for idx in idxs]
+    
+        
+        fig = None
+        if ax is None:
+            fig = plt.figure(figsize=(6, 4), dpi=200, facecolor='white') 
+            if plot_3d:
+                ax = fig.add_subplot(111, projection='3d')
+            else:
+                ax = fig.add_subplot(111)
+
+
+       
+        coords_icrs = SkyCoord(ra=ra, dec=dec, distance=distances, frame='icrs')
+
+        if coord_system == 'galactic':
+            coords_galactic = coords_icrs.galactic
+            ax.scatter(coords_galactic.l, coords_galactic.b, **kwargs)
+
+        elif coord_system == 'galactocentric':
+            galcen_frame = Galactocentric
+            coords_galactocentric = coords_icrs.transform_to(galcen_frame)
+
+            dummy = SkyCoord(ra=10*u.deg, dec=10*u.deg, distance=0*u.pc, frame='icrs')
+            coords_galactocentric_dummy = dummy.transform_to(galcen_frame)
+            
+            
+
+            if plot_3d:
+                ax.scatter(coords_galactocentric.x, coords_galactocentric.y, coords_galactocentric.z, **kwargs)
+                ax.scatter(coords_galactocentric_dummy.x, coords_galactocentric_dummy.y, coords_galactocentric_dummy.z, c='yellow', marker='*', label='Sun')
+
+                ax.set_xlabel('X (pc)')
+                ax.set_ylabel('Y (pc)')
+                ax.set_zlabel('Z (pc)')
+
+
+
+                # Add offset circle for thin disk at +- 400 pc
+                import mpl_toolkits.mplot3d.art3d as art3d
+                from matplotlib.patches import Circle
+
+                disks = [0, 400, -400, 1300, -1300]
+                colors = ['b', 'g', 'g', 'r', 'r']
+                for thi,c in zip(disks, colors):
+                    circ = Circle((0, 0), coords_galactocentric_dummy.galcen_distance.to(u.pc).value, color=c, alpha=1, fill=False)
+                    ax.add_patch(circ)
+                    art3d.pathpatch_2d_to_3d(circ, z=thi, zdir="z")
+                
+            else:
+                
+                try:
+                    
+                    from mw_plot import MWFaceOn
+                    plt.close() 
+
+                    ax = MWFaceOn(
+                        
+                        **mw_fit_kwargs
+                    )
+                    # plot solar system
+                      # turn off legend
+                    ax.scatter(-1*coords_galactocentric_dummy.x, coords_galactocentric_dummy.y, c='yellow', marker='*', label='Sun')
+
+                    ax.ax.legend().set_visible(False)
+                except ImportError:
+                    pass
+                
+                ax.scatter(-1*coords_galactocentric.x, coords_galactocentric.y, **kwargs)
+
+        return ax
+    
     
         
 # To Do
-# Distances based on normalization
-# Plotting on galactic coordinates if ra and dec are provided
-# Filtering templates by stellar class, 
+# Distances based on normalization - done
+# Plotting on galactic coordinates if ra and dec are provided - done
+# Filtering templates by stellar class - in progress
 
 
 
@@ -1955,3 +2315,33 @@ def iterate_model_parameters(model_parameters: Dict[str, Dict[str, List[Any]]],
             # Create dictionary of parameter names and their values for this combination
             param_dict = dict(zip(param_names, combination))
             yield model, param_dict
+
+def find_bands(table, flux_wildcard='FLUX_APER_*_aper_corr'):#, error_wildcard='FLUXERR_APER_*_loc_depth'):
+    # glob-like matching for column names
+    flux_columns = fnmatch.filter(table.colnames, flux_wildcard)
+    # get the band names from the column names
+    flux_split = flux_wildcard.split('*')
+    flux_bands = [col.replace(flux_split[0], '').replace(flux_split[1], '') for col in flux_columns]
+    return flux_bands
+
+def provide_phot(table, bands=None, flux_wildcard='FLUX_APER_*_aper_corr_Jy', error_wildcard='FLUXERR_APER_*_loc_depth_10pc_Jy', min_percentage_error=0.1, flux_unit=u.Jy, multi_item_columns_slice=None):
+    
+    if bands is None:
+        bands = find_bands(table)
+
+    flux_columns = [flux_wildcard.replace('*', band) for band in bands]
+    error_columns = [error_wildcard.replace('*', band) for band in bands]
+
+    assert all([col in table.colnames for col in flux_columns]), f'Flux columns {flux_columns} not found in table'
+    assert all([col in table.colnames for col in error_columns]), f'Error columns {error_columns} not found in table'
+
+    if multi_item_columns_slice is not None:
+        raise NotImplementedError('Do this I guess.')
+
+    fluxes = structured_to_unstructured(table[flux_columns].as_array()) * flux_unit
+    errors = structured_to_unstructured(table[error_columns].as_array()) * flux_unit
+
+    mask = ((errors / fluxes) < min_percentage_error) & (fluxes > 0)
+    errors[mask] = fluxes[mask] * min_percentage_error
+
+    return fluxes, errors

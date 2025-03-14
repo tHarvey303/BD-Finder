@@ -92,6 +92,10 @@ test = [
     "mypy>=0.910",
 ]
 
+plotting = [
+  "milkyway_plot @ git+https://github.com/henrysky/milkyway_plot",
+]
+
 
 # Project urls
 [project.urls]
