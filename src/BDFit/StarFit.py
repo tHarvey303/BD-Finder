@@ -40,7 +40,8 @@ file_urls={'sonora_bobcat':["https://zenodo.org/records/5063476/files/spectra_m+
            'sonora_elf_owl':['https://zenodo.org/records/10385987/files/output_1300.0_1400.tar.gz?download=1', 'https://zenodo.org/records/10385987/files/output_1600.0_1800.tar.gz?download=1', 'https://zenodo.org/records/10385987/files/output_1900.0_2100.tar.gz?download=1', 'https://zenodo.org/records/10385987/files/output_2200.0_2400.tar.gz?download=1', #Y-type
                             'https://zenodo.org/records/10385821/files/output_1000.0_1200.tar.gz?download=1', 'https://zenodo.org/records/10385821/files/output_575.0_650.tar.gz?download=1', 'https://zenodo.org/records/10385821/files/output_850.0_950.tar.gz?download=1', 'https://zenodo.org/records/10385821/files/output_700.0_800.tar.gz?download=1', # T-type
                             'https://zenodo.org/records/10381250/files/output_275.0_325.0.tar.gz?download=1', 'https://zenodo.org/records/10381250/files/output_350.0_400.0.tar.gz?download=1', 'https://zenodo.org/records/10381250/files/output_425.0_475.0.tar.gz?download=1', 'https://zenodo.org/records/10381250/files/output_500.0_550.0.tar.gz?download=1'], #L-type
-           'low-z':['https://dataverse.harvard.edu/api/access/datafile/4571308', 'https://dataverse.harvard.edu/api/access/datafile/4570758']}
+           'low-z':['https://dataverse.harvard.edu/api/access/datafile/4571308', 'https://dataverse.harvard.edu/api/access/datafile/4570758'],
+           'ATMO2020':['https://perso.ens-lyon.fr/isabelle.baraffe/ATMO2020/ATMO_2020_models.tar.gz']}
 
 evolution_tables = {'sonora_bobcat':["https://zenodo.org/records/5063476/files/evolution_and_photometery.tar.gz?download=1"],
                     'sonora_diamondback':['https://zenodo.org/records/12735103/files/evolution.zip?download=1']}
@@ -49,8 +50,9 @@ evolution_tables = {'sonora_bobcat':["https://zenodo.org/records/5063476/files/e
 model_wavelength_ranges = {'sonora_elf_owl':(0.6, 15),
                             'sonora_diamondback':(0.3, 250),
                             'sonora_bobcat':(0.4, 50),
-                            'sonora_cholla':(0.3, 250),
-                            'low-z':(0.1, 99)}
+                            'sonora_cholla':(1.0, 250),
+                            'low-z':(0.1, 99),
+                            'ATMO2020':(0.2, 100)}
 # Euclid bands
 # "Y", "Blue", "J", "Red", "H", "vis"
 # Euclid - NISP
@@ -84,16 +86,23 @@ model_parameters = {'sonora_bobcat':{
             'met':['+1.0', '+0.75', '+0.25', '+0.5', '+0.0', '-2.5', '-2.0', '-1.5', '-1.0', '-0.25', '-0.5'],
             'co':[0.85, 0.1, 0.55],
             'kzz':[-1.0, 10.0, 2.0]},
+        'ATMO2020':{
+            'temp':[200, 250, 300, 350, 400, 450, 500, 660, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000],
+            'log_g':[2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5],
+            #'kzz':[10, 9, 8, 7, 6, 5, 4, 2],
+            'kzz_type':['none', 'weak', 'strong'],
+        },
 }
 
-model_param_names = ["temp", "log_g", "kzz", "met", "co", "f"]
+model_param_names = ["temp", "log_g", "kzz", "met", "co", "f", 'kzz_type']
 model_param_dtypes = {
     "temp": float,
     "log_g": float,
     "kzz": float,
     "met": str,
     "co": str,
-    "f": str
+    "f": str,
+    'kzz_type': str,
 }
 
 # elf owl
@@ -342,6 +351,7 @@ class StarFit:
                 if library not in self.template_parameters.keys():
                     self.template_parameters[library] = {}
                 for key in list(file['meta'].keys()):
+                    key = str(key)
                     self.template_parameters[library][key] = file['meta'][key][:]
                     # parse string metas if needed
                     if any([isinstance(i, bytes) for i in self.template_parameters[library][key]]):
@@ -411,7 +421,11 @@ class StarFit:
                     print(f'{library} files not found. Downloading from Zenodo.')
                     # Download the file
                     response = requests.get(file_url, stream=True)
-                    file_name = response.headers['Content-Disposition'].split("attachment; filename*=UTF-8''")[-1].replace('attachment; filename=', '')
+                    try:
+                        file_name = response.headers['Content-Disposition'].split("attachment; filename*=UTF-8''")[-1].replace('attachment; filename=', '')
+                    except:
+                        file_path = file_url.split("/")[-1]
+
                     local_file_path = os.path.join(new_path, file_name)
 
                     if response.status_code == 200:
@@ -844,16 +858,16 @@ class StarFit:
         return self.model_parameters[model_version]
     
     def model_file_extensions(self, model_version='sonora_bobcat'):
-        model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt'}
+        model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt', 'ATMO2020':'.txt'}
         
         return model_ext[model_version]
 
     def _latex_label(self, param):
-        self.latex_labels = { 'temp': r'$T_{\rm eff}$', 'log_g': r'$\log g$', 'met': r'$\rm [Fe/H]$', 'kzz': r'$\rm K_{zz}$', 'co': r'$\rm C/O$', 'f':r'$\rm fsed'}
+        self.latex_labels = { 'temp': r'$T_{\rm eff}$', 'log_g': r'$\log g$', 'met': r'$\rm [Fe/H]$', 'kzz': r'$\rm K_{zz}$', 'co': r'$\rm C/O$', 'f':r'$\rm fsed', 'kzz_type': 'Kzz Model: ' }
         return self.latex_labels[param]
 
     def param_unit(self, param):
-        self.units = {'temp': u.K, 'log_g': u.m/u.s**2, 'met': u.dimensionless_unscaled, 'kzz': u.dimensionless_unscaled, 'co': u.dimensionless_unscaled, 'f':u.dimensionless_unscaled}
+        self.units = {'temp': u.K, 'log_g': u.m/u.s**2, 'met': u.dimensionless_unscaled, 'kzz': u.dimensionless_unscaled, 'co': u.dimensionless_unscaled, 'f':u.dimensionless_unscaled, 'kzz_type': u.dimensionless_unscaled}
         return self.units[param]
 
     def convert_templates(self, out_folder='sonora_model/', model_version='bobcat', overwrite=False):
@@ -983,7 +997,6 @@ class StarFit:
                         if not result:
                             continue
                             
-
                 elif model_version == 'sonora_diamondback':
                     m = params['met']
                     co = params['co']
@@ -1029,13 +1042,40 @@ class StarFit:
                             print('no result')
                             continue
                         print(result)
-                                       
+
+                elif model_version == 'ATMO2020':
+                    kzz_type = params['kzz_type']
+                    if kzz_type == 'none':
+                        folder = 'CEQ'
+                    elif kzz_type == 'weak':
+                        folder = 'NEQ_weak'
+                    elif kzz_type == 'strong':
+                        folder = 'NEQ_strong'
+
+                    path = f'{self.library_path}/{model_version}/models/atmosphere_models/{folder}_spectra/'
+                    name = f'spec_T{int(temp)}_lg{log_g}_{folder}.txt'
+                    name_new = f'spec_T{int(temp)}_lg{log_g}_{folder}_resample.dat'
+
+                    if f'{model_version}/resampled/{name_new}' in processed_files:
+                        all_file_names.remove(name)
+                        continue
+
+                    new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
+                    if not Path(new_path).is_file() or overwrite:
+                        result = self._resample_model(f'{path}/{name}', model_version=model_version, meta=params, new_path=new_path)
+                        if result == 'no overlap':
+                            all_file_names.remove(name)
+                            continue
+                        if not result:
+                            continue
+
                 else:
                     raise Exception(f'Unknown model version: {model_version}')
                 
                 if f'{model_version}/resampled/{name_new}' not in processed_files:
                     f.writelines(f'{model_version}/resampled/{name_new}\n')
-                all_file_names.remove(name)
+                if name in all_file_names:
+                    all_file_names.remove(name)
                 count += 1
         
         if len(all_file_names) > 0:
@@ -1043,7 +1083,8 @@ class StarFit:
                 if self.verbose:
                     print('Failed to convert:', file)
 
-        assert len(all_file_names) == 0, f'Failed to convert {len(all_file_names)} models.'
+        if model_version not in ['ATMO2020', 'low-z']:
+            assert len(all_file_names) == 0, f'Failed to convert {len(all_file_names)} models.'
 
     def clear_resampled_models(self, model_version='sonora_bobcat'):
         model_file_ext = self.model_file_extensions(model_version)
@@ -1073,6 +1114,10 @@ class StarFit:
             elif model_version == 'low-z':
                 table = Table.read(path, format='ascii', data_start=1, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
                 table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
+            elif model_version == 'ATMO2020':
+                table = Table.read(path, format='ascii', data_start=1, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
+                table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
+
         except FileNotFoundError as e:
             #if self.verbose:
             #print(f'File not found: {path}')
@@ -1370,6 +1415,7 @@ class StarFit:
             library_min_wav, library_max_wav = self.wavelength_range_of_library(library)
             library_extreme_min_wav, library_extreme_max_wav = self.extreme_wavelength_range_of_library(library)
 
+            print(f'Library {library} wavelength range: {library_min_wav.to(u.um)} - {library_max_wav.to(u.um)}')
             if library_min_wav > min_wav:
                 print(f'Warning! Minimum wavelength of library {library} is greater than minimum wavelength of bands to fit. {library_min_wav.to(u.um):.2f} > {min_wav.to(u.um):.2f}')
                 if min_wav > library_extreme_min_wav:
@@ -1414,12 +1460,12 @@ class StarFit:
 
 
         # Generate ok_data to mask nan fluxes and nan errors
-        ok_data = np.isfinite(self.fnu) & np.isfinite(self.efnu) & (self.efnu > 0)
         
 
         self.NFILT = len(fitted_bands)
         self.fnu = self.fnu[:, idxs]
         self.efnu = self.efnu[:, idxs]
+        ok_data = np.isfinite(self.fnu) & np.isfinite(self.efnu) & (self.efnu > 0)
         self.zp = np.ones_like(self.fnu)
         self.ok_data = ok_data
         self.nusefilt = self.ok_data.sum(axis=1)
@@ -1495,11 +1541,12 @@ class StarFit:
             raise Exception('Provide either an index or a catalogue id, not both.')
         
         if cat_id is not None:
-            pname = cat_id
             idx = np.where(self.catalogue_ids == cat_id)[0][0]
+            pname = f'id: {cat_id} (idx: {idx})'  
         else:
-            pname = idx
-            
+            pname = f'idx: {idx}'
+            if self.catalogue_ids is not None:
+                pname = f'{pname} (id: {self.catalogue_ids[idx]})'
 
         wavs = [self.filter_wavs[band].to(wav_unit).value for band in self.bands_to_fit]
         flux = self.fnu[idx] * u.nJy
@@ -1534,9 +1581,8 @@ class StarFit:
                     from matplotlib.patches import FancyArrowPatch
                     error_3sigma = 3*flux_err[i]
                     error_3sigma = error_3sigma.to(flux_unit, equivalencies=u.spectral_density(wavs[i]*wav_unit)).value
-                    print(error_3sigma)
                     length = abs(ax[0].get_ylim()[1] - ax[0].get_ylim()[0])*0.15
-                    ax[0].add_patch(FancyArrowPatch((wavs[i], error_3sigma), (wavs[i], error_3sigma+length), color='crimson', zorder=10, edgecolor='k', arrowstyle='-|>, scaleA=3', mutation_scale=2))
+                    ax[0].add_patch(FancyArrowPatch((wavs[i], error_3sigma), (wavs[i], error_3sigma+length), color='crimson', zorder=10, edgecolor='k', arrowstyle='-|>, scaleA=3', mutation_scale=8))
 
         if override_template_ix is not None:
             best_ix = override_template_ix
@@ -1573,6 +1619,8 @@ class StarFit:
         fig.subplots_adjust(hspace=0)
         ax[0].set_xlim(ax[0].get_xlim())
         ax[0].set_ylim(ax[0].get_ylim())
+        if flux_unit == u.ABmag:
+            ax[0].set_ylim(32, ax[0].get_ylim()[1])
         ax[1].hlines(0, wavs[0], wavs[-1], linestyle='--', color='k')
         ax[0].legend()
 
@@ -1899,8 +1947,13 @@ class StarFit:
         return table['wav'].min()*u.AA, table['wav'].max()*u.AA
     
     def wavelength_range_of_library(self, library):
-        name = self.template_names[library][0]
-        min_wav, max_wav = self.wavelength_range_of_template(library, name) 
+        names = self.template_names[library]
+        overall_min_wav, overall_max_wav = 0 * u.um, np.inf * u.um
+        for name in names:
+            min_wav, max_wav = self.wavelength_range_of_template(library, name) 
+            overall_min_wav = max(min_wav, overall_min_wav)
+            overall_max_wav = min(max_wav, overall_max_wav)
+
         return min_wav, max_wav
 
     def extreme_wavelength_range_of_library(self, library):

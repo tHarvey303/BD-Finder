@@ -16,7 +16,9 @@ Sonora Elf Owl ([Y-Type](https://zenodo.org/records/10381250), [T-Type](https://
 
 [LOWZ](https://doi.org/10.7910/DVN/SJRXUO) ([Paper](https://iopscience.iop.org/article/10.3847/1538-4357/ac013c))
 
-Please cite all fitted model papers and repositories DOIs if you use this code. 
+[ATMO2020](https://perso.ens-lyon.fr/isabelle.baraffe/ATMO2020/) ([Paper](https://arxiv.org/abs/2003.13717))
+
+Please cite all fitted model papers and repositories DOIs if you use this code, this would not be possible without the hard work of the authors of these models.
 
 ## Installation
 
