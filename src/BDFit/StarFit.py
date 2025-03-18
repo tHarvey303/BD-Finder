@@ -50,7 +50,7 @@ evolution_tables = {'sonora_bobcat':["https://zenodo.org/records/5063476/files/e
 model_wavelength_ranges = {'sonora_elf_owl':(0.6, 15),
                             'sonora_diamondback':(0.3, 250),
                             'sonora_bobcat':(0.4, 50),
-                            'sonora_cholla':(1.0, 250),
+                            'sonora_cholla':(0.3, 250),
                             'low-z':(0.1, 99),
                             'ATMO2020':(0.2, 100)}
 # Euclid bands
@@ -122,7 +122,7 @@ default_bands = ["ACS_WFC.F435W", "ACS_WFC.F475W", "ACS_WFC.F606W", "ACS_WFC.F62
 code_dir = os.path.dirname(os.path.abspath(__file__))
 
 class StarFit:
-    def __init__(self, library_path='internal', libraries = ["sonora_bobcat", "sonora_cholla", "sonora_elf_owl", 'sonora_diamondback', 'low-z'], compile_bands='default',
+    def __init__(self, libraries = ["sonora_bobcat", "sonora_cholla", "sonora_elf_owl", 'sonora_diamondback', 'low-z', 'ATMO2020'], library_path='internal', compile_bands='default',
                 facilities_to_search={"JWST": ["NIRCam", "MIRI"], "HST": ["ACS", "WFC3"], "Euclid":["NISP", "VIS"], "Paranal":["VIRCAM"]}, resample_step=50, constant_R=True, R=300, min_wav=0.3 * u.micron, 
                 max_wav=12 * u.micron, scaling_factor=1e-22, verbose=False):
 
@@ -160,6 +160,9 @@ class StarFit:
 
         print(f'Library path: {self.library_path}')
 
+        if type(libraries) is str:
+            libraries = [libraries]
+
         self.libraries = libraries
 
         self.band_codes = {}
@@ -182,6 +185,7 @@ class StarFit:
         self.template_bands = {}
         self.template_names = {}
         self.template_parameters = {}
+        self.template_ranges = {}
 
         if compile_bands == 'default':
             self.model_filters = default_bands
@@ -286,6 +290,44 @@ class StarFit:
         return mass, radius
 
 
+    def plot_model_photometry(self, model_idx, norm, ax, flux_unit=u.nJy, wav_unit=u.um, test_scale = 1, label=None, **kwargs):
+        library, name = self.get_template_name(model_idx)
+        table, path = self.select_photometry_table(model_idx)
+
+        if table is None:
+            return np.nan, np.nan
+        
+        possible_bands = [i for i in table.colnames if i not in ['Teff', 'log g', 'mass', 'R/Rsun']]
+
+        if library == 'sonora_bobcat':
+
+            params = self.get_template_parameters(model_idx)
+            temp = float(params['temp'])
+            log_g = float(params['log_g'])
+
+            # Find row in table that matches the model parameters (within 25 K and 0.1 dex)
+            row = table[np.abs(table['Teff'] - temp) < 25]
+            row = row[np.abs(row['log g'] - np.log10(1e2*log_g)) < 0.1]
+            if len(row) == 0:
+                print(f"No match for {temp}, { np.log10(1e3*log_g)}")
+                return np.nan, np.nan
+            
+            row = row[0]
+            _, _, distance = self.get_physical_params(model_idx, norm)
+            
+            plotted = False
+            for band in possible_bands:
+                if band in self.bands_to_fit:
+                    wav = self.filter_wavs[band]
+                    flux = 10 ** row[band] # mJy
+                    # flux is normalized to 10 pc. Move to distance.
+                    flux = flux * (10 * u.pc / distance)**2
+                    flux *= u.mJy
+                    ax.scatter(wav.to(wav_unit).value, test_scale*flux.to(flux_unit).value, marker='s', edgecolor='white', label=label if not plotted else '', **kwargs)
+                    plotted = True
+        else:
+            raise NotImplementedError(f'Library {library} not supported.')
+
     def get_mass_radius(self, model_idx, plot_grid=False):
         library, name = self.get_template_name(model_idx)
         table, path = self.select_photometry_table(model_idx)
@@ -356,6 +398,13 @@ class StarFit:
                     # parse string metas if needed
                     if any([isinstance(i, bytes) for i in self.template_parameters[library][key]]):
                         self.template_parameters[library][key] = [i.decode('utf-8') for i in self.template_parameters[library][key]]
+
+            if 'range' in file:
+                min_wav = file['range']['min_wav'][()] 
+                max_wav = file['range']['max_wav'][()] 
+                self.template_ranges[library] = np.array([min_wav, max_wav]).T * u.um
+            else:
+                self.add_min_max_wavelengths_to_h5(library)
 
             self.template_names[library] = list(file['names'][:])
             self.template_names[library] = [i.decode('utf-8') for i in self.template_names[library]]
@@ -568,8 +617,9 @@ class StarFit:
                             # parse string metas if needed
                             if any([isinstance(i, bytes) for i in metas[key]]):
                                 metas[key] = [i.decode('utf-8') for i in metas[key]]
-                
+
                 file.close()
+
                 # Read model parameters
                 model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['path'])
                 assert len(model_table) > 0, f'No models found in {model_version}.param. Maybe remove the file and try again.'
@@ -691,11 +741,13 @@ class StarFit:
                     file.create_group('meta')
                     for key in metas.keys():
                         file['meta'][key] = metas[key]
+                
 
-        self.template_grids[model_version] = template_grid
-        self.template_bands[model_version] = bands
-        self.template_names[model_version] = names
-        self.template_parameters[model_version] = metas.keys()
+            self.template_grids[model_version] = template_grid
+            self.template_bands[model_version] = bands
+            self.template_names[model_version] = names
+            self.template_parameters[model_version] = metas.keys()
+            self.add_min_max_wavelengths_to_h5(model_version)
 
     def _deduplicate_templates(
         self,
@@ -852,7 +904,6 @@ class StarFit:
                     wav, trans = np.loadtxt(f'{code_dir}/{save_folder}/{band}.csv', delimiter=',', unpack=True)
 
                 self.transmission_profiles[band] = (wav, trans)
-
 
     def model_parameter_ranges(self, model_version='sonora_bobcat'):
         return self.model_parameters[model_version]
@@ -1217,23 +1268,28 @@ class StarFit:
             _wht[(~self.ok_data[subset,:]) | (self.efnu[subset,:] <= 0)] = 0
 
         # if we want to use this, will need to provide grid just for subset templates bands
-        '''clip_filter = (self.pivot < wave_lim[0]) | (self.pivot > wave_lim[1])
-        if filter_mask is not None:
-                clip_filter &= filter_mask
-                
-        _wht[:, clip_filter] = 0'''
+        #clip_filter = (self.pivot < wave_lim[0]) | (self.pivot > wave_lim[1])
+        #clip_filter = np.full(self.nusefilt, False, dtype=bool)
+
+        #if filter_mask is not None:
+        #        clip_filter &= filter_mask
+
+        #if filter_mask is not None:
+        #    _wht[:, filter_mask] = 0
             
         if subset is None:
             _num = np.dot(fnu * self.zp * _wht, star_flux)
         else:
             _num = np.dot(fnu[subset,:] * self.zp * _wht, star_flux)
+
+        print(np.shape(_wht), np.shape(filter_mask), np.shape(template_grid), np.shape(star_flux), np.shape(_num))
+
             
         _den= np.dot(1*_wht, star_flux**2)
         _den[_den == 0] = 0
         star_tnorm = _num/_den
 
 
-        
         # Chi-squared
         star_chi2 = np.zeros(star_tnorm.shape, dtype=np.float32)
         for i in tqdm(range(self.NSTAR), desc='Calculating chi2 for all templates...'):
@@ -1288,6 +1344,148 @@ class StarFit:
         )
 
         return result
+     
+    def _fit_lsq_mask(self, template_grid, filter_mask=None, subset=None, sys_err=None, apply_extcorr=False):
+        
+        wave_lim = (self.min_wav, self.max_wav)
+
+        if sys_err is None:
+            sys_err = 0.0
+        
+        star_flux = np.array(template_grid).T
+        self.NSTAR = star_flux.shape[1]
+
+        fnu = self.fnu.copy()
+        efnu = self.efnu.copy()
+
+        fnu[~self.ok_data] = -99
+        efnu[~self.ok_data] = -99
+
+        # Create a weight array
+        if subset is None:
+            _wht = 1/(efnu**2+(sys_err*fnu)**2)
+            _wht /= self.zp**2
+            _wht[(~self.ok_data) | (self.efnu <= 0)] = 0
+        else:
+            _wht = 1.0 / (
+                efnu[subset,:]**2 + (sys_err * fnu[subset,:])**2
+            )
+            _wht /= self.zp**2
+            _wht[(~self.ok_data[subset,:]) | (self.efnu[subset,:] <= 0)] = 0
+
+        # Create a mask for template fluxes if provided
+        template_mask = None
+        if filter_mask is not None:
+            if filter_mask.shape != template_grid.shape:
+                raise ValueError("filter_mask must have the same shape as template_grid")
+            
+            # Transpose to match star_flux orientation
+            template_mask = filter_mask.T
+            
+            # Apply template mask to weights
+            if subset is None:
+                # Broadcasting the mask to match _wht shape
+                for i in range(star_flux.shape[1]):
+                    _wht[:, template_mask[:, i] == 0] = 0
+            else:
+                # For subset, apply carefully to maintain dimensions
+                for i in range(star_flux.shape[1]):
+                    _wht[template_mask[:, i] == 0] = 0
+
+        # Calculate normalization factors
+        if subset is None:
+            _num = np.dot(fnu * self.zp * _wht, star_flux)
+        else:
+            _num = np.dot(fnu[subset,:] * self.zp * _wht, star_flux)
+
+        _den = np.dot(1*_wht, star_flux**2)
+        
+        # Avoid division by zero
+        _den[_den == 0] = np.nan  # Use NaN instead of 0 to properly identify invalid normalizations
+        star_tnorm = _num/_den
+
+        print(np.shape(_wht), np.shape(filter_mask), np.shape(template_grid), np.shape(star_flux), np.shape(_num))
+
+        # Chi-squared calculation
+        star_chi2 = np.zeros(star_tnorm.shape, dtype=np.float32)
+        for i in tqdm(range(self.NSTAR), desc='Calculating chi2 for all templates...'):
+            if np.isnan(star_tnorm[:, i]).all():
+                star_chi2[:, i] = np.nan
+                continue
+                
+            _m = star_tnorm[:,i:i+1]*star_flux[:,i]
+            if subset is None:
+                star_chi2[:,i] = np.sum(
+                    (fnu * self.zp - _m)**2 * _wht
+                , axis=1)
+            else:
+                star_chi2[:,i] = np.sum(
+                    (fnu[subset,:] * self.zp - _m)**2 * _wht
+                , axis=1)
+        
+        # Handle NaN rows
+        nan_rows = np.all(np.isnan(star_chi2), axis=1)
+        star_min_ix = np.full(star_chi2.shape[0], -1, dtype=int)
+        
+        # Compute nanargmin only for valid rows
+        valid_rows = ~nan_rows
+        if np.any(valid_rows):  # Check if there are any valid rows
+            star_min_ix[valid_rows] = np.nanargmin(star_chi2[valid_rows], axis=1)
+            star_min_chi2 = np.nanmin(star_chi2, axis=1)
+        else:
+            # If all rows are invalid, set everything to NaN
+            star_min_chi2 = np.full(star_chi2.shape[0], np.nan)
+        
+        if subset is None:
+            # Avoid division by zero in chi-squared per degree of freedom
+            dof = self.nusefilt - 1
+            # Correct DOF for bands which are masked for this template
+            if filter_mask is not None:
+                dof -= np.sum(filter_mask[star_min_ix, :] == 0, axis=1)
+
+
+            dof = np.maximum(dof, 1)  # Ensure we don't divide by zero
+            star_min_chinu = star_min_chi2 / dof
+        else:
+            dof = self.nusefilt[subset] - 1
+
+            if filter_mask is not None:
+                dof -= np.sum(filter_mask[star_min_ix, :] == 0, axis=1)
+                
+            dof = np.maximum(dof, 1)  # Ensure we don't divide by zero
+            star_min_chinu = star_min_chi2 / dof
+        
+        if subset is None:
+            # Set attributes
+            self.star_tnorm = star_tnorm
+            self.star_chi2 = star_chi2
+            self.star_min_ix = star_min_ix
+            self.star_min_chi2 = star_min_chi2
+            self.star_min_chinu = star_min_chinu
+
+        result = dict(
+            subset = subset,
+            star_tnorm = star_tnorm,
+            star_chi2 = star_chi2,
+            star_min_ix = star_min_ix,
+            star_min_chi2 = star_min_chi2,
+            star_min_chinu = star_min_chinu,
+        )
+
+        return result
+
+    def _catalogue_mask_bands(self, bands, library):
+        ''' 
+
+        Makes a 2D mask for the template grid to avoid fitting bands which fully or partially fall outside the wavelength range of the library.
+        '''
+        grid = []
+        for pos, name in enumerate(self.template_names[library]):
+            min_wav, max_wav = self.template_ranges[library][pos]
+            fitted_bands = np.array([True if self.filter_wavs[band] >= min_wav and self.filter_wavs[band] <= max_wav else False for band in bands])
+            grid.append(fitted_bands)
+
+        return np.array(grid, dtype=bool)
 
     def fit_catalog(self, 
                 photometry_function: Callable = None,
@@ -1407,9 +1605,10 @@ class StarFit:
                 band_compar_dict[band] = band
                 band_idx.append(self.model_filters.index(band))
 
+        '''
         min_wav, max_wav = self.wavelength_range_of_bands(fitted_bands)
         check_band_ranges = False
-
+    
         extreme_min_wav, extreme_max_wav = 0 * u.um, np.inf * u.um
         for library in libraries_to_fit:
             library_min_wav, library_max_wav = self.wavelength_range_of_library(library)
@@ -1444,7 +1643,7 @@ class StarFit:
                     raise Exception('No libraries to fit. Please provide bands that are within the wavelength range of the library or change the value of outside_wav_range_behaviour.')
             else:
                 raise Exception('Unknown value for outside_wav_range_behaviour. Please provide either "clip" or "subset".')
-
+        '''
         
         grid = self._build_combined_template_grid(libraries_to_fit)
 
@@ -1453,14 +1652,21 @@ class StarFit:
         mask = np.array([i in fitted_bands for i in self.model_filters])
         # Check actual bands are in the same order as self.model_filters
         self.bands_to_fit = fitted_bands
+        self.mask = mask
+        self.reduced_template_grid = grid[self.mask, :].T
 
-        idxs = np.array([i for i, band in enumerate(phot_bands) if band in fitted_bands])
+        idxs = np.array([i for i, band in enumerate(phot_bands) if band in self.bands_to_fit])
+
+        total_filter_mask = np.ones_like(self.reduced_template_grid, dtype=bool)
+        for library in libraries_to_fit:
+            filter_mask = self._catalogue_mask_bands(fitted_bands, library)
+            total_filter_mask[self.idx_ranges[library][0]:self.idx_ranges[library][1], :] = filter_mask
+        
+        self.total_filter_mask = total_filter_mask
 
         print(f'Fitting {len(fitted_bands)} bands: {fitted_bands}')
 
-
         # Generate ok_data to mask nan fluxes and nan errors
-        
 
         self.NFILT = len(fitted_bands)
         self.fnu = self.fnu[:, idxs]
@@ -1469,14 +1675,12 @@ class StarFit:
         self.zp = np.ones_like(self.fnu)
         self.ok_data = ok_data
         self.nusefilt = self.ok_data.sum(axis=1)
-        self.mask = mask
 
         assert len(self.bands_to_fit) == self.NFILT, f'Number of bands to fit does not match number of bands in fluxes: {len(self.bands_to_fit)} != {self.NFILT}'
 
         # Check that all bands are in the model_filters
-        self.reduced_template_grid = grid[self.mask, :].T
 
-        fit_results = self._fit_lsq(self.reduced_template_grid, filter_mask=filter_mask, subset=subset, sys_err=sys_err)
+        fit_results = self._fit_lsq_mask(self.reduced_template_grid, filter_mask=total_filter_mask, subset=subset, sys_err=sys_err)
 
         if dump_fit_results:
             keys_to_dump = ['fnu', 'efnu', 'zp', 'ok_data', 'nusefilt', 'bands_to_fit', 'catalogue_ids', 'mask']
@@ -1533,7 +1737,7 @@ class StarFit:
 
             setattr(self, key, results[key])
  
-    def plot_fit(self, idx=None, cat_id=None, wav_unit=u.micron, flux_unit=u.nJy, override_template_ix=None):
+    def plot_fit(self, idx=None, cat_id=None, wav_unit=u.micron, flux_unit=u.nJy, override_template_ix=None, test_scale=1):
 
         assert idx is not None or cat_id is not None, 'Provide either an index or a catalogue id. (if catalogue IDs were provided during fitting'
 
@@ -1548,7 +1752,7 @@ class StarFit:
             if self.catalogue_ids is not None:
                 pname = f'{pname} (id: {self.catalogue_ids[idx]})'
 
-        wavs = [self.filter_wavs[band].to(wav_unit).value for band in self.bands_to_fit]
+        wavs = np.array([self.filter_wavs[band].to(wav_unit).value for band in self.bands_to_fit])
         flux = self.fnu[idx] * u.nJy
         flux_err = self.efnu[idx] * u.nJy
 
@@ -1568,7 +1772,7 @@ class StarFit:
         
         plot_flux = flux.to(flux_unit, equivalencies=u.spectral_density(wavs*wav_unit)).value
 
-        ax[0].errorbar(wavs, plot_flux, yerr=err, fmt='o', label='Data',
+        ax[0].errorbar(wavs, plot_flux, yerr=err, fmt='o', label='Phot.',
                         color='crimson', markeredgecolor='k', zorder=10)
 
         ax[0].set_xlim(ax[0].get_xlim())
@@ -1591,13 +1795,20 @@ class StarFit:
 
         if best_ix != -1:
             model_phot = self.star_tnorm[idx, best_ix] * self.reduced_template_grid[best_ix] * u.nJy
+            unmasked_bands = self.total_filter_mask[best_ix, :]
             plot_model_phot = model_phot.to(flux_unit, equivalencies=u.spectral_density(wavs*wav_unit)).value
-            ax[0].scatter(wavs, plot_model_phot, label='Best Fit', color='navy')
-            ax[1].scatter(wavs, (flux - model_phot) / flux_err)
+            
+            ax[0].scatter(wavs[unmasked_bands], plot_model_phot[unmasked_bands], label='Best Fit Phot.', facecolor='navy', edgecolor='white', zorder=10)
+            ax[1].scatter(wavs[unmasked_bands], ((flux - model_phot) / flux_err)[unmasked_bands], facecolor='navy', edgecolor='white', zorder=10)
+
+            ax[0].scatter(wavs[~unmasked_bands], plot_model_phot[~unmasked_bands], label='Masked Phot.', facecolor='navy', edgecolor='red', zorder=10, alpha=0.5)
+
             library, name = self.get_template_name(best_ix)
             self.plot_best_template(best_ix, idx, ax=ax[0], color='navy', wav_unit=wav_unit, flux_unit=flux_unit, linestyle='solid', lw=1)
             params = self._extract_model_meta(library, name)
             latex_labels = [self._latex_label(param) for param in params.keys()]
+
+            #chi2 = np.nansum(((flux[unmasked_bands] - model_phot[unmasked_bands]) / flux_err[unmasked_bands])**2)
 
             mass, radius, distance = self.get_physical_params(best_ix, self.star_tnorm[idx, best_ix])
             info_box = '\n'.join([f'{latex_labels[i]}: {params[param]}{self.param_unit(param):latex}' for i, param in enumerate(params.keys())])
@@ -1606,10 +1817,11 @@ class StarFit:
             if not np.isnan(mass):
                 lowest_info_box=f'Mass: {mass.to(u.Msun).to_string(format="latex", precision=3)}\nRadius: {radius.to_string(format="latex", precision=3)}\nDistance: {distance.to(u.kpc).to_string(format="latex", precision=3)}'
                 info_box = f'{info_box}\n{lowest_info_box}'
+                self.plot_model_photometry(best_ix, ax=ax[0], norm = self.star_tnorm[idx, best_ix], color='navy', wav_unit=wav_unit, flux_unit=flux_unit, test_scale=test_scale, label = 'Distance Phot.')
 
             ax[0].text(1.02, 0.98, info_box, transform=ax[0].transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')], bbox=dict(facecolor='w', alpha=0.5, edgecolor='black', boxstyle='square,pad=0.5'))
-            ax[1].vlines(wavs, (flux - model_phot) / flux_err, 0, color='k', alpha=0.5, linestyle='dotted')
-            ax[1].set_ylim(np.nanmin((flux - model_phot) / flux_err) - 0.2, np.nanmax((flux - model_phot)/flux_err)+0.2)
+            ax[1].vlines(wavs[unmasked_bands], ((flux - model_phot) / flux_err)[unmasked_bands], 0, color='k', alpha=0.5, linestyle='dotted')
+            ax[1].set_ylim(np.nanmin(((flux - model_phot) / flux_err)[unmasked_bands]) - 0.2, np.nanmax(((flux - model_phot)/flux_err)[unmasked_bands])+0.2)
         else:
             print(f"No best fit found for {idx=}!")
 
@@ -1945,15 +2157,28 @@ class StarFit:
         path = f'{self.library_path}/{library}/resampled/{name}'
         table = Table.read(path, format='ascii.ecsv', delimiter=' ', names=['wav', 'flux_nu'])
         return table['wav'].min()*u.AA, table['wav'].max()*u.AA
+
+
+    def add_min_max_wavelengths_to_h5(self, library, output_file_name='photometry_grid.hdf5'):
+        mins = []
+        maxs = []
+
+        for name in self.template_names[library]:
+            min_wav, max_wav = self.wavelength_range_of_template(library, name)
+            mins.append(min_wav.to(u.um).value)
+            maxs.append(max_wav.to(u.um).value)
+
+            model_file_name = f'{library}_{output_file_name}'
+            file_path = f'{self.library_path}/{model_file_name}'
+
+        with h5.File(file_path, 'a') as f:
+            f.create_dataset(f'range/min_wav', data=mins)
+            f.create_dataset(f'range/max_wav', data=maxs)
     
     def wavelength_range_of_library(self, library):
-        names = self.template_names[library]
-        overall_min_wav, overall_max_wav = 0 * u.um, np.inf * u.um
-        for name in names:
-            min_wav, max_wav = self.wavelength_range_of_template(library, name) 
-            overall_min_wav = max(min_wav, overall_min_wav)
-            overall_max_wav = min(max_wav, overall_max_wav)
-
+        min_wav = np.max(self.template_ranges[library], axis=0)[0]
+        max_wav = np.min(self.template_ranges[library], axis=0)[1]
+        print(min_wav, max_wav)
         return min_wav, max_wav
 
     def extreme_wavelength_range_of_library(self, library):
@@ -1965,9 +2190,9 @@ class StarFit:
         return wav_range.min().to(u.um), wav_range.max().to(u.um)
 
 
-    def create_stellar_interpolator(self, table):
+    def create_stellar_interpolator(self, table, method='linear'):
         """
-        Create interpolators for stellar parameters from a DataFrame with columns:
+        Create interpolators for stellar parameters from a Table with columns:
         Teff, logg, mass, radius
         
         Args:
@@ -2031,12 +2256,12 @@ class StarFit:
         # Create interpolators for mass and radius
         mass_interpolator = RegularGridInterpolator(
             (temp_unique, logg_unique), mass_grid,
-            bounds_error=False, fill_value=None
+            bounds_error=False, fill_value=None, method = method,
         )
         
         radius_interpolator = RegularGridInterpolator(
             (temp_unique, logg_unique), radius_grid,
-            bounds_error=False, fill_value=None
+            bounds_error=False, fill_value=None, method = method,
         )
         
         return mass_interpolator, radius_interpolator, (temp_unique, logg_unique)

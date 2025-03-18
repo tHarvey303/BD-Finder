@@ -1,7 +1,7 @@
 # BD Fitter
 
 
-This python package is for fitting brown dwarf (substellar mass object) photometry.  It currently supports the Sonora Bobcat, Cholla, Diamondback and Elf Owl models, and the LOW-Z models.
+This python package is for fitting brown dwarf (substellar mass object) photometry.  It currently supports the Sonora Bobcat, Cholla, Diamondback and Elf Owl models, and the LOW-Z and ATMO2020 models.
 Photometry for a range of filters is provided, and if more are needed the models are automatically downloaded from Zenodo/Harvard DataVerse if not found in directory code is run in.
 
 Model links: 
@@ -16,7 +16,7 @@ Sonora Elf Owl ([Y-Type](https://zenodo.org/records/10381250), [T-Type](https://
 
 [LOWZ](https://doi.org/10.7910/DVN/SJRXUO) ([Paper](https://iopscience.iop.org/article/10.3847/1538-4357/ac013c))
 
-[ATMO2020](https://perso.ens-lyon.fr/isabelle.baraffe/ATMO2020/) ([Paper](https://arxiv.org/abs/2003.13717))
+[ATMO2020](https://perso.ens-lyon.fr/isabelle.baraffe/ATMO2020/) ([Paper](https://www.aanda.org/articles/aa/full_html/2020/05/aa37381-19/aa37381-19.html))
 
 Please cite all fitted model papers and repositories DOIs if you use this code, this would not be possible without the hard work of the authors of these models.
 
