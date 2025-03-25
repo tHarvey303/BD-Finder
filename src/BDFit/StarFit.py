@@ -1,36 +1,38 @@
-from astropy.table import Table, Column
-import numpy as np
-import astropy.units as u
-import astropy.constants as c
-import glob
-from typing import Tuple, List, Dict, Union, Any, Iterator, Optional, Callable
-import re
-import operator
-from scipy.interpolate import RegularGridInterpolator
-import collections
-import os
 import fnmatch
-from numpy.lib.recfunctions import structured_to_unstructured
-from matplotlib.colors import LogNorm
-from copy import deepcopy
-from tqdm import tqdm
+import glob
+import gzip
+import operator
+import os
+import re
 import shutil
-from pathlib import Path
-from matplotlib import pyplot as plt
-import spectres 
-from scipy.optimize import curve_fit
-import requests
-from joblib import Parallel, delayed
 import tarfile
+import warnings
 import zipfile
-import gzip 
-import h5py as h5
-from numpy.lib.recfunctions import structured_to_unstructured
-from astroquery.svo_fps import SvoFps
-import matplotlib.patheffects as pe
+from copy import deepcopy
 from itertools import product
-from astropy.coordinates import SkyCoord, Galactic, Galactocentric
-     
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
+
+import astropy.units as u
+import h5py as h5
+import matplotlib.patheffects as pe
+import numpy as np
+import requests
+import spectres
+from astropy.coordinates import Galactocentric, SkyCoord
+from astropy.io import ascii
+from astropy.table import Column, Table
+
+# supress astropy runtime warnings
+from astropy.utils.exceptions import AstropyWarning
+from astroquery.svo_fps import SvoFps
+from matplotlib import pyplot as plt
+from matplotlib.colors import LogNorm
+from numpy.lib.recfunctions import structured_to_unstructured
+from scipy.interpolate import RegularGridInterpolator
+from tqdm import tqdm
+
+warnings.simplefilter('ignore', category=AstropyWarning)
 
 
 # Path to download models - currently supports Sonora Bobcat, Cholla, Elf Owl, Diamondback and the Low-Z models
@@ -63,7 +65,7 @@ model_parameters = {'sonora_bobcat':{
             'temp':[200, 225, 250, 275, 300, 325, 350, 375, 400, 425, 450, 475, 500, 525, 550, 575, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400],
             'log_g':[10, 17, 31, 56, 100, 178, 316, 562, 1000, 1780, 3160],
             'met':['-0.5', '0.0', '+0.5'],
-            'co':['', 0.5, 1.5]}, 
+            'co':['', 0.5, 1.5]},
         'sonora_cholla':{
             'temp':[500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1050, 1100, 1150, 1200, 1250, 1300],
             'log_g':[31, 56, 100, 178, 316, 562, 1000, 1780, 3162],
@@ -74,7 +76,7 @@ model_parameters = {'sonora_bobcat':{
             'met':[-0.5, -1.0, 0.0, 0.5, 0.7, 1.0],
             'kzz':[2.0, 4.0, 7.0, 8.0, 9.0],
             'co':[0.5, 1.0, 1.5, 2.0, 2.5]},
-        'sonora_diamondback':{ 
+        'sonora_diamondback':{
             'temp':[900, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400],
             'log_g':[31, 100, 316, 1000, 3160],
             'met':['-0.5', '0.0', '+0.5'],
@@ -94,6 +96,8 @@ model_parameters = {'sonora_bobcat':{
         },
 }
 
+
+
 model_param_names = ["temp", "log_g", "kzz", "met", "co", "f", 'kzz_type']
 model_param_dtypes = {
     "temp": float,
@@ -109,11 +113,11 @@ model_param_dtypes = {
 # The parameters included within this grid are effective temperature (Teff), gravity (log(g)), vertical eddy diffusion coefficient (log(Kzz)), atmospheric metallicity ([M/H]), and Carbon-to-Oxygen ratio (C/O).
 
 
-default_bands = ["ACS_WFC.F435W", "ACS_WFC.F475W", "ACS_WFC.F606W", "ACS_WFC.F625W", "ACS_WFC.F775W", "ACS_WFC.F814W", "ACS_WFC.F850LP", 
-                "F070W", "F090W", "WFC3_IR.F105W", "WFC3_IR.F110W", "F115W", "WFC3_IR.F125W", "F150W", 
-                "WFC3_IR.F140W", "F140M", "WFC3_IR.F160W", "F162M", "F182M", "F200W", "F210M", "F250M", 
+default_bands = ["ACS_WFC.F435W", "ACS_WFC.F475W", "ACS_WFC.F606W", "ACS_WFC.F625W", "ACS_WFC.F775W", "ACS_WFC.F814W", "ACS_WFC.F850LP",
+                "F070W", "F090W", "WFC3_IR.F105W", "WFC3_IR.F110W", "F115W", "WFC3_IR.F125W", "F150W",
+                "WFC3_IR.F140W", "F140M", "WFC3_IR.F160W", "F162M", "F182M", "F200W", "F210M", "F250M",
                 "F277W", "F300M", "F335M", "F356W", "F360M", "F410M", "F430M",
-                "F444W", "F460M", "F480M", "F560W", "F770W", 
+                "F444W", "F460M", "F480M", "F560W", "F770W",
                 "NISP.Y", "NISP.J", "NISP.H", "VIS.vis",
                 "VISTA.Z", "VISTA.Y", "VISTA.J", "VISTA.H", "VISTA.Ks"]
 
@@ -121,10 +125,12 @@ default_bands = ["ACS_WFC.F435W", "ACS_WFC.F475W", "ACS_WFC.F606W", "ACS_WFC.F62
 
 code_dir = os.path.dirname(os.path.abspath(__file__))
 
+
 class StarFit:
     def __init__(self, libraries = ["sonora_bobcat", "sonora_cholla", "sonora_elf_owl", 'sonora_diamondback', 'low-z', 'ATMO2020'], library_path='internal', compile_bands='default',
-                facilities_to_search={"JWST": ["NIRCam", "MIRI"], "HST": ["ACS", "WFC3"], "Euclid":["NISP", "VIS"], "Paranal":["VIRCAM"]}, resample_step=50, constant_R=True, R=300, min_wav=0.3 * u.micron, 
-                max_wav=12 * u.micron, scaling_factor=1e-22, verbose=False):
+                parameter_overrides={'sonora_cholla':{'model':'sonora_bobcat', 'met':'0.0', 'co':''}, 'sonora_elf_owl':{'model':'sonora_bobcat', 'met':'closest', 'co':'closest'}},
+                facilities_to_search={"JWST": ["NIRCam", "MIRI"], "HST": ["ACS", "WFC3"], "Euclid":["NISP", "VIS"], "Paranal":["VIRCAM"]}, resample_step=50, constant_R=True, R=300, min_wav=0.3 * u.micron,
+                max_wav=12 * u.micron, default_scaling_factor=1e-22, verbose=False):
 
         '''
 
@@ -136,6 +142,11 @@ class StarFit:
             List of model libraries to compile. Default is ["sonora_bobcat", "sonora_cholla", "sonora_elf_owl", 'sonora_diamondback'].
         compile_bands : list
             List of bands to compile the models for. Default is 'default', which uses the default_bands.
+        parameter_overrides : dict
+            Dictionary of parameter overrides for specific libraries. Default is {'sonora_cholla':'sonora_bobcat'}. This is used to
+            allow estimation of distances/luminosities/masses etc for models without evolutionary tables by linking them to a similar library.
+            The matching is done by the model name and the parameter values are taken from the override library. I.e the default is to allow
+            Cholla models to be matched to Bobcat models, where we take the M/H 0.0 and solar C/O models from Bobcat when Cholla models are used.
         facilities_to_search : dict
             Dictionary of facilities and instruments to search SVO for filters. Default is {"JWST": ["NIRCam", "MIRI"], "HST": ["ACS", "WFC3_IR"]}.
         resample_step : int
@@ -148,15 +159,15 @@ class StarFit:
             Minimum wavelength to include in the models. Default is 0.3 microns.
         max_wav : astropy Quantity
             Maximum wavelength to include in the models. Default is 10 microns.
-        scaling_factor : float
+        default_scaling_factor : float
             Scaling factor to shift the models to reasonable flux ranges. In general use this should not be modified, as changing this
-            without also recomputing all photometry will result in incorrectly normalized SEDs. Default is 1e-22.
+            without also recomputing all photometry may result in incorrectly normalized SEDs, although it is also saved to the HDF5 grids. Default is 1e-22. 
         '''
 
         if library_path == 'internal':
             self.library_path = os.path.dirname(os.path.dirname(code_dir)) + '/models'
         else:
-            self.library_path = library_path   
+            self.library_path = library_path
 
         print(f'Library path: {self.library_path}')
 
@@ -174,18 +185,21 @@ class StarFit:
         self.model_parameters = model_parameters
         self.verbose = verbose
 
-        self.resample_step = resample_step 
+        self.parameter_overrides = parameter_overrides
+
+        self.resample_step = resample_step
         self.constant_R = constant_R
         self.R = R
         self.min_wav = min_wav
         self.max_wav = max_wav
-        self.scaling_factor = scaling_factor
+        self.default_scaling_factor = default_scaling_factor
 
         self.template_grids = {}
         self.template_bands = {}
         self.template_names = {}
         self.template_parameters = {}
         self.template_ranges = {}
+        self.scaling_factors = {}
 
         if compile_bands == 'default':
             self.model_filters = default_bands
@@ -194,18 +208,18 @@ class StarFit:
 
 
         self._fetch_transmission_bandpasses()
-            
-        # If compiled data exists, load it. If not, run setup_libraries. 
+
+        # If compiled data exists, load it. If not, run setup_libraries.
 
         for library in libraries:
             if not os.path.exists(f"{self.library_path}/{library}_photometry_grid.hdf5"):
                 print(f'Compiled {library} photometry not found.')
-                if not os.path.exists(f'{self.library_path}/{library}/'): 
+                if not os.path.exists(f'{self.library_path}/{library}/'):
                     print(f'No {library} models found. Running setup_libraries.')
                     self.setup_libraries(self.library_path, [library])
                 self.convert_templates(self.library_path, library)
                 self.build_template_grid(self.model_filters, model_versions=[library], model_path=self.library_path)
-            
+
             self._load_template_grid(self.library_path, library)
 
         self.combined_libraries = None
@@ -230,26 +244,90 @@ class StarFit:
         library, name = self.get_template_name(model_idx)
         parameters = self.get_template_parameters(model_idx)
 
+        info = {}
+        # This allows using e.g. sonora bobcat evolution tables for elf owl models.
+        if library in self.parameter_overrides.keys():
+            overrides = self.parameter_overrides.get(library, {}).copy()
+            info_overrides = overrides.copy()
+            new_library = overrides['model']
+            for parameter, key in overrides.items():
+                if 'closest' in key:
+                    available_parameters = self.model_parameters[new_library][parameter]
+                    if type(available_parameters[0]) is str:
+                        # This removes e.g. + from metallcitiy values, and converts '' to 1 e.g. for solar C/O
+                        available_parameters_corr = [float(str(i).replace('+', '')) if i != '' else 1 for i in available_parameters]
+                    else:
+                        available_parameters_corr = available_parameters
+                    available_parameters_arr = np.array(available_parameters_corr)
+                    closest_pos = np.argmin(np.abs(available_parameters_arr - float(parameters[parameter])))
+                    closest = available_parameters[closest_pos]
+                    #print(f'Overriding {parameter} from {parameters[parameter]} to {closest}')
+                    overrides[parameter] = closest
+                    info_overrides[parameter] = available_parameters_arr[closest_pos]
+
+            info['overrides'] = info_overrides
+
+            parameters.update(overrides)
+            library = new_library
+
         if library == 'sonora_bobcat':
             if parameters['co'] not in ['', "b'nan'"]:
-                table_name = 'flux_table_JWST_m+0.0_co{}'.format(parameters['co'])
+                table_name = f'flux_table_JWST_m+0.0_co{parameters["co"]}'
             else:
                 met = parameters["met"]
                 if met == '0.0':
                     met = '+0.0'
                 table_name = f'flux_table_JWST{met}'
-            
-            from astropy.io import ascii
+
             path = f'{self.library_path}/{library}_evolution/evolution_and_photometery/photometry_tables/{table_name}'
-            
+
+            # Could use these tables instead?
+            #alt_path = f'{self.library_path}/{library}_evolution/evolution_and_photometery/evolution_tables/evo_tables{met}/nc{met}_co1.0_mass_age'
+            #tab_col_names = ascii.read(path, format='fixed_width', fast_reader=False, guess=False, delimiter='  ', header_start=1, data_start=2, data_end=2)
+            #tab = ascii.read(path, format='basic', fast_reader=False, guess=False, delimiter='\s', header_start=None, data_start=2, names=tab_col_names.colnames)
+
+
             tab_col_names = ascii.read(path, format='fixed_width', fast_reader=False, guess=False, delimiter='  ', header_start=4, data_start=5, data_end=5)
-            tab = ascii.read(path, format='basic', fast_reader=False, guess=False, delimiter='\s', header_start=None, data_start=5, names=tab_col_names.colnames)
+            tab = ascii.read(path, format='basic', fast_reader=False, guess=False, delimiter=r'\s', header_start=None, data_start=5, names=tab_col_names.colnames)
             tab['R/Rsun'] = [float(str(i).replace('*', '')) for i in tab['R/Rsun']]
             # Round to avoid having 1201, 1200 be separate values. Rounds to nearest 5 which should be ok.
             tab['Teff'] = np.round(tab['Teff']*2, -1)/2
+
+        elif library == 'ATMO2020':
+            if parameters["kzz_type"] == 'none':
+                kzz_type = 'CEQ'
+            elif parameters["kzz_type"] == 'weak':
+                kzz_type = 'NEQ_weak'
+            elif parameters["kzz_type"] == 'strong':
+                kzz_type = 'NEQ_strong'
+
+
+            path = f'{self.library_path}/{library}/models/evolutionary_tracks/ATMO_{kzz_type}/JWST_photometry/JWST_phot_NIRCAM_modAB_mean/'
+            # folder
+            files = glob.glob(f'{path}/*')
+            tables = []
+            paths = []
+            #print(f'Looking for {parameters["temp"]}, {parameters["log_g"]}, {parameters["kzz_type"]}')
+            for file in files:
+                tab = ascii.read(file)
+                min_teff, max_teff = tab['Teff'].min(), tab['Teff'].max()
+                min_logg, max_logg = tab['Gravity'].min(), tab['Gravity'].max()
+                # round min and max logg to nearest 0.1
+                min_logg = np.round(min_logg*10)/10
+                max_logg = np.round(max_logg*10)/10
+
+                print(f'Found {min_teff}, {max_teff}, {min_logg}, {max_logg}')
+
+                if parameters['temp'] >= min_teff and parameters['temp'] <= max_teff and parameters['log_g'] >= min_logg and parameters['log_g'] <= max_logg:
+                    tables.append(tab)
+                    paths.append(file)
+
+            tab = tables
+            path = paths
+
         else:
-            return None, None
-        return tab, path
+            return None, None, None
+        return tab, path, info
 
 
     def interpolate_stellar_parameters(self, teff, logg, mass_interp, radius_interp):
@@ -274,48 +352,64 @@ class StarFit:
             logg = np.asarray(logg)
             if teff.shape != logg.shape:
                 raise ValueError("teff and logg must have the same shape")
-            
+
             # Reshape arrays into points for interpolation
             points = np.column_stack((teff.flatten(), logg.flatten()))
-        
+
         # Interpolate values
         mass = mass_interp(points)
         radius = radius_interp(points)
-        
+
         # Reshape back to original shape if needed
         if not np.isscalar(teff):
             mass = mass.reshape(teff.shape)
             radius = radius.reshape(teff.shape)
-        
+
         return mass, radius
 
 
     def plot_model_photometry(self, model_idx, norm, ax, flux_unit=u.nJy, wav_unit=u.um, test_scale = 1, label=None, **kwargs):
         library, name = self.get_template_name(model_idx)
-        table, path = self.select_photometry_table(model_idx)
+        table, path, info = self.select_photometry_table(model_idx)
+        params = self.get_template_parameters(model_idx)
+
 
         if table is None:
             return np.nan, np.nan
-        
-        possible_bands = [i for i in table.colnames if i not in ['Teff', 'log g', 'mass', 'R/Rsun']]
+
+        if library in self.parameter_overrides.keys():
+            params.update(self.parameter_overrides[library])
+            new_library = self.parameter_overrides[library]['model']
+            library = new_library
+
+        plotted = False
 
         if library == 'sonora_bobcat':
 
-            params = self.get_template_parameters(model_idx)
+            possible_bands = [i for i in table.colnames if i not in ['Teff', 'log g', 'mass', 'R/Rsun']]
+
             temp = float(params['temp'])
             log_g = float(params['log_g'])
 
             # Find row in table that matches the model parameters (within 25 K and 0.1 dex)
-            row = table[np.abs(table['Teff'] - temp) < 25]
-            row = row[np.abs(row['log g'] - np.log10(1e2*log_g)) < 0.1]
-            if len(row) == 0:
-                print(f"No match for {temp}, { np.log10(1e3*log_g)}")
+            init_row = table[np.abs(table['Teff'] - temp) < 25]
+            row = init_row[np.abs(init_row['log g'] - np.log10(1e2*log_g)) < 0.1]
+
+            if len(init_row) == 0:
+                #print(f"No match for {temp} within 25K, available: {np.unique(table['Teff'])}")
                 return np.nan, np.nan
-            
+            if len(row) == 0:
+                #print(f"No match for {np.log10(1e2*log_g)} within 0.1 dex, available: {np.unique(table['log g'])}")
+                return np.nan, np.nan
+
+
             row = row[0]
-            _, _, distance = self.get_physical_params(model_idx, norm)
-            
-            plotted = False
+            results = self.get_physical_params(model_idx, norm)
+            if results is None:
+                return np.nan, np.nan
+
+            distance = results['distance']
+
             for band in possible_bands:
                 if band in self.bands_to_fit:
                     wav = self.filter_wavs[band]
@@ -325,16 +419,68 @@ class StarFit:
                     flux *= u.mJy
                     ax.scatter(wav.to(wav_unit).value, test_scale*flux.to(flux_unit).value, marker='s', edgecolor='white', label=label if not plotted else '', **kwargs)
                     plotted = True
-        else:
-            raise NotImplementedError(f'Library {library} not supported.')
 
-    def get_mass_radius(self, model_idx, plot_grid=False):
+        elif library == 'ATMO2020':
+            # TEMP
+
+            return None
+
+
+            results = self.get_physical_params(model_idx, norm)
+            if results is None:
+                return np.nan, np.nan
+
+            # Need to deal with distances not always matching num(tables) due to not finding a match.
+            distance = results['distance']
+
+            print(distance)
+
+            for pos, tab in enumerate(table):
+                temp = float(params['temp'])
+                log_g = float(params['log_g'])
+                print(tab.colnames)
+                row = tab[np.abs(tab['Teff'] - temp) < 25]
+                row = row[np.abs(row['Gravity'] - log_g) < 0.1]
+                if len(row) == 0:
+                    continue
+                elif len(row) > 1:
+                    # Find closest in both
+                    row = row[np.argmin(np.sqrt((row['Teff'] - temp)**2 + (row['Gravity'] - log_g)**2))]
+
+                if type(row) is Table:
+                    row = row[0]
+
+                dis = distance[pos]
+
+                for colname in row.colnames:
+                    band = colname.split('-')[-1]
+
+                    if band in self.bands_to_fit:
+                        wav = self.filter_wavs[band]
+                        mag_vega = row[colname]
+                        vega_zp = self.vega_zps[band]
+                        flux = 10 ** ((vega_zp - mag_vega) / 2.5) # Jy
+                        flux = flux * (10 * u.pc / dis)**2
+                        flux *= u.Jy
+                        ax.scatter(wav.to(wav_unit).value, test_scale*flux.to(flux_unit).value, marker='s', edgecolor='white', label=label if not plotted else '', **kwargs)
+                        plotted = True
+
+        else:
+            print(f'Warning! Library {library} not supported for parameter photometry plotting.')
+            return None
+
+    def get_params_from_table(self, model_idx, plot_grid=False):
         library, name = self.get_template_name(model_idx)
-        table, path = self.select_photometry_table(model_idx)
+        table, path, info = self.select_photometry_table(model_idx)
         if table is None:
-            return np.nan, np.nan
+            return {}
 
         parameters = self.get_template_parameters(model_idx)
+
+        if library in self.parameter_overrides.keys():
+            parameters.update(self.parameter_overrides[library])
+            new_library = self.parameter_overrides[library]['model']
+            library = new_library
 
         if library == 'sonora_bobcat':
             colnames = {'temp':'Teff', 'log_g':'log g', 'mass':'mass', 'radius':'R/Rsun'}
@@ -351,30 +497,97 @@ class StarFit:
             if plot_grid:
                 filename = os.path.basename(path)
                 self.visualize_grid(table, temp_unique, logg_unique, mass_interpolator, radius_interpolator, plot_name=f"{library}_{filename}_mass_radius_grid.png")
-            
+
             #+2 to convert from cm/s^2 to m/s^2
             mass, radius = self.interpolate_stellar_parameters(temp, np.log10(logg)+2.0, mass_interpolator, radius_interpolator)
             mass = mass[0] * u.Mjupiter
             radius = radius[0] * u.Rsun
+
+            results = {'mass':mass, 'radius':radius}
+
+        elif library == 'ATMO2020':
+            colnames = {'temp':'Teff', 'log_g':'Gravity', 'mass':'Mass', 'radius':'Radius', 'luminosity':'Luminosity', 'age':'Age'}
+            if type(table) is list:
+                # Loop over tables and get estimates for each.
+                results = {'mass':[], 'radius':[], 'luminosity':[], 'age':[], 'log_g':[], 'temp':[]}
+                if len(table) == 0:
+                    return {}
+
+                print(f'Found {len(table)} tables for {name}')
+                for tab in table:
+                    try:
+                        [tab.rename_column(colnames[key], key) for key in colnames.keys()]
+                    except Exception as e:
+                        print(e)
+                        pass
+
+                    # Find row with closest parameters
+                    temp = float(parameters['temp'])
+                    logg = float(parameters['log_g'])
+
+                    row = tab[np.abs(tab['temp'] - temp) < 25]
+                    row = row[np.abs(row['log_g'] - logg) < 0.1]
+
+                    if len(row) == 0:
+                        continue
+                    elif len(row) > 1:
+                       # Find closest in both
+                        row = row[np.argmin(np.sqrt((row['temp'] - temp)**2 + (row['log_g'] - logg)**2))]
+
+                    if type(row) is Table:
+                        row = row[0]
+
+                    units = {'mass':u.Msun, 'radius':u.Rsun, 'luminosity':u.Lsun, 'age':u.Gyr, 'log_g':u.dimensionless_unscaled, 'temp':u.K}
+                    mass = row['mass']
+                    radius = row['radius']
+                    luminosity = 10**row['luminosity']
+                    age = row['age']
+                    log_g_row = row['log_g']
+                    temp_row = row['temp']
+                    #print(f'Mass: {mass}, Radius: {radius}, Luminosity: {luminosity}, Age: {age} for log g: {logg} (row log g: {log_g_row}), temp: {temp} (row temp: {temp_row})')
+                    results['mass'].append(mass)
+                    results['radius'].append(radius)
+                    results['luminosity'].append(luminosity)
+                    results['age'].append(age)
+                    results['log_g'].append(log_g_row)
+                    results['temp'].append(temp_row)
+
+                if len(results['mass']) == 0:
+                    return {}
+
+                # Apply units
+                for key in results.keys():
+                    results[key] = np.array(results[key]) * units[key]
+
+
         else:
             print(f'Warning! Library {library} not supported for mass and radius estimates.')
-            mass = np.nan
-            radius = np.nan
+            results = {}
 
-        return mass, radius
+        results['info'] = info
+
+        return results
 
 
     def get_physical_params(self, idx, norm):
-        mass, radius = self.get_mass_radius(idx)
-        if np.isnan(mass) or np.isnan(radius):
-            return np.nan, np.nan, np.nan
+        results = self.get_params_from_table(idx)
 
-        # norm is R^2/d^2 
-        distance = np.sqrt(radius**2 / (norm*self.scaling_factor))
+        if 'mass' in results.keys() and 'radius' in results.keys():
+            mass = results['mass']
+            radius = results['radius']
+        else:
+            return None
+
+        library, name = self.get_template_name(idx)
+
+        # norm is R^2/d^2
+        distance = np.sqrt(radius**2 / (norm*self.scaling_factors[library]))
         distance = distance.to(u.pc)
 
-        return mass, radius, distance
-            
+        results['distance'] = distance
+
+        return results
+
     def _load_template_grid(self, library_path, library):
 
         with h5.File(f"{library_path}/{library}_photometry_grid.hdf5", 'r') as file:
@@ -389,6 +602,9 @@ class StarFit:
                 self.build_template_grid(self.model_filters, library, model_path=library_path)
                 self._load_template_grid(library_path, library)
 
+            scale = file.attrs['scale']
+            self.scaling_factors[library] = scale
+
             if 'meta' in file:
                 if library not in self.template_parameters.keys():
                     self.template_parameters[library] = {}
@@ -400,8 +616,8 @@ class StarFit:
                         self.template_parameters[library][key] = [i.decode('utf-8') for i in self.template_parameters[library][key]]
 
             if 'range' in file:
-                min_wav = file['range']['min_wav'][()] 
-                max_wav = file['range']['max_wav'][()] 
+                min_wav = file['range']['min_wav'][()]
+                max_wav = file['range']['max_wav'][()]
                 self.template_ranges[library] = np.array([min_wav, max_wav]).T * u.um
             else:
                 self.add_min_max_wavelengths_to_h5(library)
@@ -410,9 +626,9 @@ class StarFit:
             self.template_names[library] = [i.decode('utf-8') for i in self.template_names[library]]
 
             file.close()
-        
+
     def _build_combined_template_grid(self, libraries='all'):
-        
+
         if self.combined_libraries == libraries:
             return self.combined_template_grid
 
@@ -440,11 +656,11 @@ class StarFit:
         for library in libraries:
             idx_ranges[library] = (start, start+len(self.template_grids[library].T))
             start += len(self.template_grids[library].T)
-            
+
         self.idx_ranges = idx_ranges
 
         return self.combined_template_grid
-        
+
     def _type_from_temp(self, temp):
         # TODO: This currently does nothing
         # From Sonora Elf Owl
@@ -454,7 +670,7 @@ class StarFit:
         for library in libraries:
             # Ensure the destination folder exists, or create it if not
             new_path = path + f"/{library}/"
-    
+
             os.makedirs(new_path, exist_ok=True)
 
             # Fetch the Zenodo metadata for the given repository URL
@@ -498,11 +714,11 @@ class StarFit:
                         with zipfile.ZipFile(file, 'r') as zip_ref:
                             zip_ref.extractall(out_dir)
                     elif file.endswith('.tar.gz'):
-                        tar = tarfile.open(file) 
-                        # extracting file 
+                        tar = tarfile.open(file)
+                        # extracting file
                         os.makedirs(out_dir+'/', exist_ok=True)
-                        tar.extractall(out_dir) 
-                        tar.close() 
+                        tar.extractall(out_dir)
+                        tar.close()
 
                 enclosed_files = glob.glob(out_dir+'/*') + glob.glob(out_dir+'/*/*')
                 for file in enclosed_files:
@@ -512,7 +728,7 @@ class StarFit:
 
                 # Fix permissions issues
                 os.system(f'chmod -R 777 {out_dir}/')
-                
+
     def _convolve_sed(self, mags, wavs_um, filters, input='mag'):
 
         self._fetch_transmission_bandpasses()
@@ -532,7 +748,7 @@ class StarFit:
 
             wav = wav * unit
             wav = wav.to('micron')
-        
+
             trap_object = lambda x: np.interp(x, wav, trans)
             max_wav = np.max(wav)
             min_wav = np.min(wav)
@@ -558,7 +774,7 @@ class StarFit:
                 top_int = np.trapz(trans_ob * fluxes * wavs_um_loop, wavs_um_loop)
                 #print(top_int)
                 flux = top_int / trans_int
-                
+
                 if input == 'flux':
                     mag_bd = flux.to(mags.unit)
                 elif input == 'mag':
@@ -566,7 +782,7 @@ class StarFit:
 
             mag_band.append(mag_bd)
         return mag_band
-    
+
     def _fix_names(self, model_version, model_path='/nvme/scratch/work/tharvey/brown_dwarfs/models/', output_file_name='photometry_grid.hdf5'):
         model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['path'])
         assert len(model_table) > 0, f'No models found in {model_version}.param. Maybe remove the file and try again.'
@@ -577,38 +793,38 @@ class StarFit:
             names.append(name)
 
         model_file_name = f'{model_version}_{output_file_name}'
-            
-        with h5.File(f'{model_path}/{model_file_name}', 'a') as file:    
+
+        with h5.File(f'{model_path}/{model_file_name}', 'a') as file:
             file.create_dataset('names', data=names)
             file.close()
-        
+
     def build_template_grid(self, bands, model_versions=['sonora_bobcat', 'sonora_cholla'], model_path='/nvme/scratch/work/tharvey/brown_dwarfs/models/', overwrite=False, output_file_name='photometry_grid.hdf5'):
-        
+
         if type(model_versions) == str:
             model_versions = [model_versions]
 
         for model_version in model_versions:
             model_file_name = f'{model_version}_{output_file_name}'
             file_path = f'{model_path}/{model_file_name}'
-            
+
             # Check if file exists
             if os.path.isfile(file_path) and not overwrite:
                 # Open existing file and get current bands
                 with h5.File(file_path, 'r') as file:
                     existing_bands = list(file.attrs['bands'])
                     missing_bands = [band for band in bands if band not in existing_bands]
-                    
+
                     if not missing_bands:
                         print(f'{model_version} template grid already exists with all requested bands. Skipping.')
                         continue
-                        
+
                     print(f'{model_version} template grid exists but missing bands: {missing_bands}. Adding them.')
-                    
+
                     # Get existing data - note dimensions are (nfilters, ntemplates)
                     template_grid = file['template_grid'][:]
                     names = file.attrs.get('names', file['names'][:] if 'names' in file else [])
                     scale = file.attrs['scale']
-                    
+
                     # Copy meta information
                     metas = {}
                     if 'meta' in file:
@@ -624,7 +840,7 @@ class StarFit:
                 model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['path'])
                 assert len(model_table) > 0, f'No models found in {model_version}.param. Maybe remove the file and try again.'
                 assert len(model_table) == template_grid.shape[1], f'Number of models ({len(model_table)}) does not match template grid shape ({template_grid.shape[1]})'
-                
+
                 # Create a new combined band list, preserving the order of the input bands
                 combined_bands = []
                 for band in bands:
@@ -633,74 +849,74 @@ class StarFit:
                 for band in existing_bands:
                     if band not in combined_bands:
                         combined_bands.append(band)
-                
+
                 # Create a new template grid with the correct shape (nfilters, ntemplates)
                 new_template_grid = np.zeros((len(combined_bands), template_grid.shape[1]), dtype=np.float32)
-                
+
                 # Map old and new band positions
                 old_to_new_indices = {i: combined_bands.index(band) for i, band in enumerate(existing_bands)}
-                
+
                 # Copy existing data to the correct positions in the new grid
                 for old_idx, new_idx in old_to_new_indices.items():
                     new_template_grid[new_idx] = template_grid[old_idx]
-                
+
                 # Process missing bands
                 missing_band_indices = [combined_bands.index(band) for band in missing_bands]
-                
+
                 for i, row in tqdm(enumerate(model_table), total=len(model_table), desc=f'Adding bands to {model_version} template grid'):
                     name = row["path"].split("/")[-1]
-                    
+
                     # Read model spectrum
                     table = Table.read(f'{model_path}/{row["path"]}', names=['wav', 'flux_nu'], format='ascii.ecsv', delimiter=' ', units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
-                    table['flux_njy'] = table['flux_nu'].to(u.nJy)*self.scaling_factor
-                    
+                    table['flux_njy'] = table['flux_nu'].to(u.nJy)*scale
+
                     # Update meta information if not already present
                     meta_keys_tab = table.meta.keys()
                     for key in meta_keys_tab:
                         if key not in metas:
                             metas[key] = np.full(template_grid.shape[1], np.nan)
-                        
-                    
+
+
                     # Calculate fluxes for missing bands only
                     convolved_fluxes = self._convolve_sed(table['flux_njy'], table['wav'].to(u.um), missing_bands, input='flux')
-                    
+
                     # Place the new fluxes at the correct positions
                     for j, band_idx in enumerate(missing_band_indices):
                         new_template_grid[band_idx, i] = convolved_fluxes[j].value
-                
+
                 # Convert string metas if needed
                 for key in metas:
                     if any([isinstance(i, str) for i in metas[key]]):
                         metas[key] = [str(i) for i in metas[key]]
-                
+
                 # Save to file
                 with h5.File(file_path, 'w') as file:
                     file.create_dataset('template_grid', data=new_template_grid, compression='gzip')
                     file.attrs['bands'] = combined_bands
                     file.attrs['scale'] = scale
-                    
+
                     file.create_dataset('names', data=names)
-                    
+
                     # Store metadata
                     file.create_group('meta')
                     for key in metas:
                         file['meta'][key] = metas[key]
-                        
+
             else:
                 # Original code for creating a new file
                 print(f'Creating new {model_version} template grid.')
                 models_table = Table()
                 names = []
-                
+
                 model_table = Table.read(f'{model_path}/{model_version}.param', format='ascii', delimiter=' ', names=['path'])
                 assert len(model_table) > 0, f'No models found in {model_version}.param. Maybe remove the file and try again.'
                 metas = {}
                 for pos, row in tqdm(enumerate(model_table), total=len(model_table), desc=f'Building {model_version} template grid'):
                     name = row["path"].split("/")[-1]
-                    
+
                     names.append(name)
                     table = Table.read(f'{model_path}/{row["path"]}', names=['wav', 'flux_nu'], format='ascii.ecsv', delimiter=' ', units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
-                    table['flux_njy'] = table['flux_nu'].to(u.nJy)*self.scaling_factor
+                    table['flux_njy'] = table['flux_nu'].to(u.nJy)*self.default_scaling_factor
 
                     meta_keys_tab = table.meta.keys()
                     for key in meta_keys_tab:
@@ -712,7 +928,7 @@ class StarFit:
                     convolved_fluxes = [i.value for i in self._convolve_sed(table['flux_njy'], table['wav'].to(u.um), bands, input='flux')]
                     assert len(convolved_fluxes) == len(bands), f'Convolved fluxes and bands are different lengths: {len(convolved_fluxes)} and {len(bands)}'
                     flux_column = Column(convolved_fluxes, name=name, unit=u.nJy)
-                    
+
                     for key in metas.keys():
                         if key in meta_keys_tab:
                             metas[key].append(table.meta[key])
@@ -731,17 +947,17 @@ class StarFit:
                 if not os.path.exists(model_path):
                     os.makedirs(model_path)
 
-                with h5.File(file_path, 'w') as file:    
+                with h5.File(file_path, 'w') as file:
                     file.create_dataset('template_grid', data=template_grid, compression='gzip')
                     file.attrs['bands'] = bands
-                    file.attrs['scale'] = self.scaling_factor
-                    
+                    file.attrs['scale'] = self.default_scaling_factor
+
                     file.create_dataset('names', data=names)
                     # Stores meta for dataset - temperature, log_g, met, etc. Useful for filtering models, calculating distances, etc.
                     file.create_group('meta')
                     for key in metas.keys():
                         file['meta'][key] = metas[key]
-                
+
 
             self.template_grids[model_version] = template_grid
             self.template_bands[model_version] = bands
@@ -774,21 +990,21 @@ class StarFit:
         # Keep track of which templates to keep and their duplicates
         to_keep = np.ones(N, dtype=bool)
         duplicate_map = {}
-        
+
         # Compare each template with all subsequent templates
         for i in range(N):
             if not to_keep[i]:
                 continue
-                
+
             template1 = template_grid[i]
             duplicates = []
-            
+
             for j in range(i + 1, N):
                 if not to_keep[j]:
                     continue
-                    
+
                 template2 = template_grid[j]
-                
+
                 # Calculate differences based on method
                 if relative:
                     # Avoid division by zero
@@ -796,27 +1012,28 @@ class StarFit:
                     diffs = np.abs(template1/safe_template2 - 1)
                 else:
                     diffs = np.abs(template1 - template2)
-                
+
                 # Check if all differences are within tolerance
                 if np.all(diffs <= tolerance):
                     to_keep[j] = False
                     duplicates.append(j)
-            
+
             if duplicates:
                 duplicate_map[i] = duplicates
-        
+
         # Create deduplicated grid
         deduplicated_grid = template_grid[to_keep]
-        
+
         return deduplicated_grid, duplicate_map
 
     def _fetch_transmission_bandpasses(self, save_folder: str = 'filters/'):
-             
+
         if len(self.model_filters) != len(self.band_codes):
             filter_wavs = {}
             filter_instruments = {}
             filter_ranges = {}
             band_codes = {}
+            vega_zps = {}
 
             done_band = False
             for facility in self.facilities_to_search:
@@ -833,7 +1050,7 @@ class StarFit:
                     bands_in_table = [
                         i.split(".")[-1] for i in svo_table["filterID"]
                     ]
-                    
+
                     bands_instruments = [i.split("/")[1] for i in svo_table["filterID"]]
                     for band in self.model_filters:
                         if band in bands_in_table or band in bands_instruments:
@@ -849,7 +1066,7 @@ class StarFit:
                                     svo_band = band
 
                                 filter_instruments[band] = instrument
-                                
+
                                 mask = (
                                     svo_table["filterID"]
                                     == f"{facility}/{instrument}.{svo_band}"
@@ -857,7 +1074,7 @@ class StarFit:
                                 assert np.sum(mask) == 1, f"Multiple or no profiles found for {facility}/{instrument}.{svo_band}"
 
                                 wav = svo_table[mask]["WavelengthCen"]
-                              
+
                                 upper = (
                                     svo_table[mask]["WavelengthCen"]
                                     + svo_table[mask]["FWHM"] / 2.0
@@ -879,14 +1096,18 @@ class StarFit:
 
                                 filter_ranges[band] = range
 
+                                if svo_table[mask]["MagSys"][0] == "Vega":
+                                    vega_zps[band] = svo_table[mask]["ZeroPoint"][0]
+
             assert len(filter_wavs) == len(self.model_filters), f"Missing filters: {set(self.model_filters) - set(filter_wavs.keys())}"
 
             self.band_codes = band_codes
             self.filter_wavs = filter_wavs
             self.filter_ranges = filter_ranges
             self.filter_instruments = filter_instruments
-            self.pivot = np.array([self.filter_wavs[band].to(u.AA).value for band in self.model_filters]) 
-            
+            self.pivot = np.array([self.filter_wavs[band].to(u.AA).value for band in self.model_filters])
+            self.vega_zps = vega_zps
+
         for band in self.model_filters:
             if band not in self.transmission_profiles.keys():
                 if not os.path.exists(f'{code_dir}/{save_folder}/{band}.csv'):
@@ -907,22 +1128,22 @@ class StarFit:
 
     def model_parameter_ranges(self, model_version='sonora_bobcat'):
         return self.model_parameters[model_version]
-    
+
     def model_file_extensions(self, model_version='sonora_bobcat'):
         model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt', 'ATMO2020':'.txt'}
-        
+
         return model_ext[model_version]
 
     def _latex_label(self, param):
-        self.latex_labels = { 'temp': r'$T_{\rm eff}$', 'log_g': r'$\log g$', 'met': r'$\rm [Fe/H]$', 'kzz': r'$\rm K_{zz}$', 'co': r'$\rm C/O$', 'f':r'$\rm fsed', 'kzz_type': 'Kzz Model: ' }
+        self.latex_labels = { 'temp': r'$T_{\rm eff}$', 'log_g': r'$\log g$', 'met': r'$\rm [Fe/H]$', 'kzz': r'$\rm K_{zz}$', 'co': r'$\rm C/O$', 'f':r'$\rm fsed', 'kzz_type': 'Kzz Model: ', 'model': 'Evo. Model: '}
         return self.latex_labels[param]
 
     def param_unit(self, param):
-        self.units = {'temp': u.K, 'log_g': u.m/u.s**2, 'met': u.dimensionless_unscaled, 'kzz': u.dimensionless_unscaled, 'co': u.dimensionless_unscaled, 'f':u.dimensionless_unscaled, 'kzz_type': u.dimensionless_unscaled}
+        self.units = {'temp': u.K, 'log_g': u.cm/u.s**2, 'met': u.dimensionless_unscaled, 'kzz': u.dimensionless_unscaled, 'co': u.dimensionless_unscaled, 'f':u.dimensionless_unscaled, 'kzz_type': u.dimensionless_unscaled}
         return self.units[param]
 
     def convert_templates(self, out_folder='sonora_model/', model_version='bobcat', overwrite=False):
-        
+
         model_parameter_ext = self.model_file_extensions(model_version)
 
         # Count the number of models to convert with extension recurisvely in the file system
@@ -930,13 +1151,13 @@ class StarFit:
         all_files = glob.glob(f'{self.library_path}/{model_version}/**/*{model_parameter_ext}', recursive=True)
         files_to_ignore = ['parameter']
         all_files = [file for file in all_files if not any([i in file for i in files_to_ignore])]
-        
+
         all_files = [file for file in all_files if '_resample' not in file]
         all_files = [file for file in all_files if '.gz' not in file and '.tar' not in file and '.zip' not in file]
         all_files = [file for file in all_files if Path(file).is_file()]
         all_file_names = [file.split('/')[-1] for file in all_files]
         npermutations = len(all_files)
-        
+
         print(f'Total resampled files: {len(resampled_files)}, Left to convert: {np.max([npermutations - len(resampled_files), 0])}')
 
         count = 0
@@ -951,7 +1172,7 @@ class StarFit:
 
 
         if count >= npermutations:
-            return 
+            return
 
         if model_version == 'sonora_elf_owl':
             # Working out folder name
@@ -974,7 +1195,7 @@ class StarFit:
                     co = params['co']
                     mname = f'_m+{m}/spectra/' if m == '0.0' and co == '' else f'_m{m}'
                     mname = f'_m+{m}' if co != '' else mname
-                    
+
                     co_name = f'_co{co}' if co != '' else ''
                     co_folder_name = f'{co_name}_g1000nc' if co != '' else ''
                     m = f'+{m}' if co != '' and m == '0.0' else m
@@ -989,7 +1210,7 @@ class StarFit:
 
                     #else:
                     #    print(f'/spectra{mname}{co_folder_name}/{name}')
-                    
+
                     new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
                     if not Path(new_path).is_file() or overwrite:
                         result = self._resample_model(f'{path}/{name}', model_version=model_version, meta=params, new_path=new_path)
@@ -997,8 +1218,8 @@ class StarFit:
                             all_file_names.remove(name)
                             continue
                         if not result:
-                            continue 
-                                             
+                            continue
+
                 elif model_version == 'sonora_cholla':
                     kzz = params['kzz']
                     name = f'{temp}K_{log_g}g_logkzz{kzz}.spec'
@@ -1008,7 +1229,7 @@ class StarFit:
                     if f'{model_version}/resampled/{name_new}' in processed_files:
                         all_file_names.remove(name)
                         continue
-                    
+
                     new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
 
                     if not Path(new_path).is_file() or overwrite:
@@ -1018,12 +1239,12 @@ class StarFit:
                             continue
                         if not result:
                             continue
-                   
+
                 elif model_version == 'sonora_elf_owl':
                     m = params['met']
                     co = params['co']
                     kzz = params['kzz']
-                    
+
                     for i in options:
                         if temp >= i[0] and temp <= i[1]:
                             temp_low, temp_high = i
@@ -1035,7 +1256,7 @@ class StarFit:
                     name = f'spectra_logzz_{kzz}_teff_{float(temp)}_grav_{log_g}_mh_{m}_co_{float(co)}.nc'
                     name_new = f'spectra_logzz_{kzz}_teff_{float(temp)}_grav_{log_g}_mh_{m}_co_{float(co)}_resample.dat'
                     new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
-                        
+
                     if f'{model_version}/resampled/{name_new}' in processed_files:
                         all_file_names.remove(name)
                         continue
@@ -1047,13 +1268,13 @@ class StarFit:
                             continue
                         if not result:
                             continue
-                            
+
                 elif model_version == 'sonora_diamondback':
                     m = params['met']
                     co = params['co']
                     fi = params['f']
 
-                
+
                     name = f't{temp}g{log_g}{fi}_m{m}_co{co}.spec'
                     path = f'{self.library_path}/{model_version}/spec/spectra/'
                     name_new = f't{temp}g{log_g}{fi}_m{m}_co{co}_resample.dat'
@@ -1122,13 +1343,13 @@ class StarFit:
 
                 else:
                     raise Exception(f'Unknown model version: {model_version}')
-                
+
                 if f'{model_version}/resampled/{name_new}' not in processed_files:
                     f.writelines(f'{model_version}/resampled/{name_new}\n')
                 if name in all_file_names:
                     all_file_names.remove(name)
                 count += 1
-        
+
         if len(all_file_names) > 0:
             for file in all_file_names:
                 if self.verbose:
@@ -1142,59 +1363,59 @@ class StarFit:
         resampled_files = glob.glob(f'{self.library_path}/{model_version}/**/*_resample.dat', recursive=True)
         for file in resampled_files:
             os.remove(file)
-            
+
     def _resample_model(self, path, model_version, resample=True, meta={}, new_path=''):
         try:
             if model_version == 'sonora_bobcat':
                 with(open(path, 'r')) as f:
                     table = Table.read(path, format='ascii', data_start=2, header_start=None, guess=False, fast_reader=False, names=['microns', 'Flux (erg/cm^2/s/Hz)'], units=[u.micron, u.erg/(u.cm**2*u.s*u.Hz)])
             elif model_version == 'sonora_cholla':
-                table = Table.read(path, format='ascii', data_start=2, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
+                table = Table.read(path, format='ascii', data_start=2, header_start=None, guess=False, delimiter=r'\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
                 table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
             elif model_version == 'sonora_elf_owl':
                 import xarray
                 ds = xarray.load_dataset(path)
                 wav = ds['wavelength'].data * u.micron
-                flux = ds['flux'].data * u.erg/u.cm**2/u.s/u.cm # erg/cm^2/s/cm 
+                flux = ds['flux'].data * u.erg/u.cm**2/u.s/u.cm # erg/cm^2/s/cm
                 flux = flux.to(u.erg/u.cm**2/u.s/u.Hz, equivalencies=u.spectral_density(wav))
                 wav = wav.to(u.micron)
                 table = Table([wav, flux], names=['microns', 'Flux (erg/cm^2/s/Hz)'])
             elif model_version == 'sonora_diamondback':
-                table = Table.read(path, format='ascii', data_start=3, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
+                table = Table.read(path, format='ascii', data_start=3, header_start=None, guess=False, delimiter=r'\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
                 table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
             elif model_version == 'low-z':
-                table = Table.read(path, format='ascii', data_start=1, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
+                table = Table.read(path, format='ascii', data_start=1, header_start=None, guess=False, delimiter=r'\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
                 table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
             elif model_version == 'ATMO2020':
-                table = Table.read(path, format='ascii', data_start=1, header_start=None, guess=False, delimiter='\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
+                table = Table.read(path, format='ascii', data_start=1, header_start=None, guess=False, delimiter=r'\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
                 table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
 
-        except FileNotFoundError as e:
+        except FileNotFoundError:
             #if self.verbose:
             #print(f'File not found: {path}')
             return False
-        
+
         table['wav'] = table['microns'].to(u.AA)
-        table.sort('wav') 
+        table.sort('wav')
         table_order = table['wav', 'Flux (erg/cm^2/s/Hz)']
         table_order = table_order[(table['wav'] > self.min_wav) & (table['wav'] < self.max_wav)]
         if len(table_order) == 0:
             if self.verbose:
                 print('No overlap with filter range.')
             return 'no overlap'
-            
+
 
         new_table = Table()
-        
+
         if resample:
             if self.constant_R:
                 new_disp_grid = self._generate_wav_sampling([table_order['wav'].max()], table_order['wav'].min()) * u.AA
             else:
                 new_disp_grid = np.arange(table_order['wav'].min(), table_order['wav'].max(), self.resample_step) * u.AA
-    
+
             fluxes = spectres.spectres(new_disp_grid.to(u.AA).value, table_order['wav'].to(u.AA).value, table_order['Flux (erg/cm^2/s/Hz)'].value, fill=np.nan, verbose=False)
 
-            new_table['wav'] = new_disp_grid 
+            new_table['wav'] = new_disp_grid
             new_table['flux_nu'] = fluxes * u.erg/(u.cm**2*u.s*u.Hz)
 
         else:
@@ -1213,7 +1434,7 @@ class StarFit:
 
         if new_path == '':
             new_path=path+'_resample.dat'
-            
+
         new_table.write(new_path, format='ascii.ecsv', overwrite=True)
         return True
 
@@ -1237,12 +1458,12 @@ class StarFit:
         return np.array(x)
 
     def _fit_lsq(self, template_grid, filter_mask=None,  subset=None, sys_err=None, apply_extcorr=False):
-    
+
         wave_lim = (self.min_wav, self.max_wav)
 
         if sys_err is None:
             sys_err = 0.0
-        
+
         star_flux = np.array(template_grid).T
         self.NSTAR = star_flux.shape[1]
 
@@ -1255,7 +1476,7 @@ class StarFit:
         # Least squares normalization of stellar templates
         if subset is None:
             _wht = 1/(efnu**2+(sys_err*fnu)**2)
-        
+
             _wht /= self.zp**2
             _wht[(~self.ok_data) | (self.efnu <= 0)] = 0
 
@@ -1276,15 +1497,14 @@ class StarFit:
 
         #if filter_mask is not None:
         #    _wht[:, filter_mask] = 0
-            
+
         if subset is None:
             _num = np.dot(fnu * self.zp * _wht, star_flux)
         else:
             _num = np.dot(fnu[subset,:] * self.zp * _wht, star_flux)
 
-        print(np.shape(_wht), np.shape(filter_mask), np.shape(template_grid), np.shape(star_flux), np.shape(_num))
+        #print(np.shape(_wht), np.shape(filter_mask), np.shape(template_grid), np.shape(star_flux), np.shape(_num))
 
-            
         _den= np.dot(1*_wht, star_flux**2)
         _den[_den == 0] = 0
         star_tnorm = _num/_den
@@ -1302,7 +1522,7 @@ class StarFit:
                 star_chi2[:,i] = np.sum(
                     (fnu[subset,:] * self.zp - _m)**2 * _wht
                 , axis=1)
-        
+
         # Mask rows where all elements are NaN
         nan_rows = np.all(np.isnan(star_chi2), axis=1)
         star_min_ix = np.full(star_chi2.shape[0], -1, dtype = int)
@@ -1312,7 +1532,7 @@ class StarFit:
         star_min_ix[valid_rows] = np.nanargmin(star_chi2[valid_rows], axis=1)
         #star_min_ix = np.nanargmin(star_chi2, axis=1)
         star_min_chi2 = np.nanmin(star_chi2, axis=1)
-        
+
         if subset is None:
             star_min_chinu = star_min_chi2 / (self.nusefilt - 1)
             '''star_gal_chi2 = (
@@ -1344,14 +1564,14 @@ class StarFit:
         )
 
         return result
-     
+
     def _fit_lsq_mask(self, template_grid, filter_mask=None, subset=None, sys_err=None, apply_extcorr=False):
-        
+
         wave_lim = (self.min_wav, self.max_wav)
 
         if sys_err is None:
             sys_err = 0.0
-        
+
         star_flux = np.array(template_grid).T
         self.NSTAR = star_flux.shape[1]
 
@@ -1378,10 +1598,10 @@ class StarFit:
         if filter_mask is not None:
             if filter_mask.shape != template_grid.shape:
                 raise ValueError("filter_mask must have the same shape as template_grid")
-            
+
             # Transpose to match star_flux orientation
             template_mask = filter_mask.T
-            
+
             # Apply template mask to weights
             if subset is None:
                 # Broadcasting the mask to match _wht shape
@@ -1399,7 +1619,7 @@ class StarFit:
             _num = np.dot(fnu[subset,:] * self.zp * _wht, star_flux)
 
         _den = np.dot(1*_wht, star_flux**2)
-        
+
         # Avoid division by zero
         _den[_den == 0] = np.nan  # Use NaN instead of 0 to properly identify invalid normalizations
         star_tnorm = _num/_den
@@ -1412,7 +1632,7 @@ class StarFit:
             if np.isnan(star_tnorm[:, i]).all():
                 star_chi2[:, i] = np.nan
                 continue
-                
+
             _m = star_tnorm[:,i:i+1]*star_flux[:,i]
             if subset is None:
                 star_chi2[:,i] = np.sum(
@@ -1422,11 +1642,11 @@ class StarFit:
                 star_chi2[:,i] = np.sum(
                     (fnu[subset,:] * self.zp - _m)**2 * _wht
                 , axis=1)
-        
+
         # Handle NaN rows
         nan_rows = np.all(np.isnan(star_chi2), axis=1)
         star_min_ix = np.full(star_chi2.shape[0], -1, dtype=int)
-        
+
         # Compute nanargmin only for valid rows
         valid_rows = ~nan_rows
         if np.any(valid_rows):  # Check if there are any valid rows
@@ -1435,7 +1655,7 @@ class StarFit:
         else:
             # If all rows are invalid, set everything to NaN
             star_min_chi2 = np.full(star_chi2.shape[0], np.nan)
-        
+
         if subset is None:
             # Avoid division by zero in chi-squared per degree of freedom
             dof = self.nusefilt - 1
@@ -1451,10 +1671,10 @@ class StarFit:
 
             if filter_mask is not None:
                 dof -= np.sum(filter_mask[star_min_ix, :] == 0, axis=1)
-                
+
             dof = np.maximum(dof, 1)  # Ensure we don't divide by zero
             star_min_chinu = star_min_chi2 / dof
-        
+
         if subset is None:
             # Set attributes
             self.star_tnorm = star_tnorm
@@ -1487,15 +1707,15 @@ class StarFit:
 
         return np.array(grid, dtype=bool)
 
-    def fit_catalog(self, 
+    def fit_catalog(self,
                 photometry_function: Callable = None,
                 bands: List[str] = 'internal',
-                photometry_function_kwargs: dict = {},  
-                libraries_to_fit: Union[str, List[str]] = 'all',  
-                sys_err=None, 
-                filter_mask=None, 
+                photometry_function_kwargs: dict = {},
+                libraries_to_fit: Union[str, List[str]] = 'all',
+                sys_err=None,
+                filter_mask=None,
                 subset=None,
-                fnu=None, 
+                fnu=None,
                 efnu=None,
                 catalogue_ids=None,
                 dump_fit_results=False,
@@ -1541,8 +1761,8 @@ class StarFit:
 
         if bands == 'internal':
             bands = self.model_filters
-        
-        
+
+
         if photometry_function is not None:
             fnu, efnu = photometry_function(**photometry_function_kwargs)
 
@@ -1559,14 +1779,14 @@ class StarFit:
         if catalogue_ids is not None:
             assert len(catalogue_ids) == len(fnu), 'Catalogue IDs must be the same length as the fluxes.'
 
-        self.fnu = fnu.to(u.nJy).value 
+        self.fnu = fnu.to(u.nJy).value
         self.efnu = efnu.to(u.nJy).value
-        
+
 
         # Get template grid here.
         if libraries_to_fit == 'all':
             libraries_to_fit = self.libraries
-        
+
         # Make mask for columns in self.model_filters that aren't in bands
 
         split_model_filters = [i.split('.')[-1] for i in self.model_filters]
@@ -1596,7 +1816,7 @@ class StarFit:
                     fitted_bands.append(full_band)
                     band_idx.append(match_idx)
                 else:
-                    
+
                     print(f'Warning! Band {band} not in model_filters. Removing from bands to fit.')
                     bands.remove(band)
             else:
@@ -1644,7 +1864,7 @@ class StarFit:
             else:
                 raise Exception('Unknown value for outside_wav_range_behaviour. Please provide either "clip" or "subset".')
         '''
-        
+
         grid = self._build_combined_template_grid(libraries_to_fit)
 
         print(f'Fitting with {", ".join(libraries_to_fit)} libraries with {np.shape(grid)[1]} templates.')
@@ -1661,7 +1881,7 @@ class StarFit:
         for library in libraries_to_fit:
             filter_mask = self._catalogue_mask_bands(fitted_bands, library)
             total_filter_mask[self.idx_ranges[library][0]:self.idx_ranges[library][1], :] = filter_mask
-        
+
         self.total_filter_mask = total_filter_mask
 
         print(f'Fitting {len(fitted_bands)} bands: {fitted_bands}')
@@ -1698,21 +1918,26 @@ class StarFit:
 
             with open(dump_fit_results_path, 'wb') as f:
                 import pickle
-                pickle.dump(dump_dict, f)
+                pickle.dump(dump_dict, f, protocol=5) # Efficient binary protocol for large files
 
         return fit_results
 
     def get_catalog_physical_params(self):
         assert hasattr(self, 'star_tnorm'), 'Fit the catalogue first.'
         assert hasattr(self, 'star_min_ix'), 'Fit the catalogue first.'
-        
+
         distances = np.zeros(len(self.star_min_ix))
         masses = np.zeros(len(self.star_min_ix))
         radii = np.zeros(len(self.star_min_ix))
 
         for i in range(len(self.star_min_ix)):
             norm = self.star_tnorm[i, self.star_min_ix[i]]
-            mass, radius, distance = self.get_physical_params(self.star_min_ix[i], norm)
+            results = self.get_physical_params(self.star_min_ix[i], norm)
+            if results is not None:
+                distance = results['distance']
+                mass = results['mass']
+                radius = results['radius']
+
             if mass is not None:
                 masses[i] = mass.to(u.M_sun).value
             if radius is not None:
@@ -1736,17 +1961,17 @@ class StarFit:
                 self.reduce_template_grid = self.combined_template_grid[results[key], :].T
 
             setattr(self, key, results[key])
- 
+
     def plot_fit(self, idx=None, cat_id=None, wav_unit=u.micron, flux_unit=u.nJy, override_template_ix=None, test_scale=1):
 
         assert idx is not None or cat_id is not None, 'Provide either an index or a catalogue id. (if catalogue IDs were provided during fitting'
 
         if cat_id is not None and idx is not None:
             raise Exception('Provide either an index or a catalogue id, not both.')
-        
+
         if cat_id is not None:
             idx = np.where(self.catalogue_ids == cat_id)[0][0]
-            pname = f'id: {cat_id} (idx: {idx})'  
+            pname = f'id: {cat_id} (idx: {idx})'
         else:
             pname = f'idx: {idx}'
             if self.catalogue_ids is not None:
@@ -1769,7 +1994,7 @@ class StarFit:
             err_high = np.abs(2.5*np.log10(1 + flux_err/flux))
             err = np.array([err_high, err_low])
             ax[0].invert_yaxis()
-        
+
         plot_flux = flux.to(flux_unit, equivalencies=u.spectral_density(wavs*wav_unit)).value
 
         ax[0].errorbar(wavs, plot_flux, yerr=err, fmt='o', label='Phot.',
@@ -1778,7 +2003,7 @@ class StarFit:
         ax[0].set_xlim(ax[0].get_xlim())
 
         if flux_unit == u.ABmag:
-            
+
             # plot any negative fluxes as 3 sigma upper limits
             for i, f in enumerate(flux):
                 if f < 0:
@@ -1786,7 +2011,7 @@ class StarFit:
                     error_3sigma = 3*flux_err[i]
                     error_3sigma = error_3sigma.to(flux_unit, equivalencies=u.spectral_density(wavs[i]*wav_unit)).value
                     length = abs(ax[0].get_ylim()[1] - ax[0].get_ylim()[0])*0.15
-                    ax[0].add_patch(FancyArrowPatch((wavs[i], error_3sigma), (wavs[i], error_3sigma+length), color='crimson', zorder=10, edgecolor='k', arrowstyle='-|>, scaleA=3', mutation_scale=8))
+                    ax[0].add_patch(FancyArrowPatch((wavs[i], error_3sigma), (wavs[i], error_3sigma+length), facecolor='crimson', zorder=10, edgecolor='k', arrowstyle='-|>, scaleA=3', mutation_scale=8))
 
         if override_template_ix is not None:
             best_ix = override_template_ix
@@ -1797,7 +2022,7 @@ class StarFit:
             model_phot = self.star_tnorm[idx, best_ix] * self.reduced_template_grid[best_ix] * u.nJy
             unmasked_bands = self.total_filter_mask[best_ix, :]
             plot_model_phot = model_phot.to(flux_unit, equivalencies=u.spectral_density(wavs*wav_unit)).value
-            
+
             ax[0].scatter(wavs[unmasked_bands], plot_model_phot[unmasked_bands], label='Best Fit Phot.', facecolor='navy', edgecolor='white', zorder=10)
             ax[1].scatter(wavs[unmasked_bands], ((flux - model_phot) / flux_err)[unmasked_bands], facecolor='navy', edgecolor='white', zorder=10)
 
@@ -1809,13 +2034,33 @@ class StarFit:
             latex_labels = [self._latex_label(param) for param in params.keys()]
 
             #chi2 = np.nansum(((flux[unmasked_bands] - model_phot[unmasked_bands]) / flux_err[unmasked_bands])**2)
+            results = self.get_physical_params(best_ix, self.star_tnorm[idx, best_ix])
 
-            mass, radius, distance = self.get_physical_params(best_ix, self.star_tnorm[idx, best_ix])
+            if results is not None:
+                distance = results['distance']
+                mass = results['mass']
+                radius = results['radius']
+
             info_box = '\n'.join([f'{latex_labels[i]}: {params[param]}{self.param_unit(param):latex}' for i, param in enumerate(params.keys())])
-            lower_info_box = f'$\chi^2_\\nu$: {self.star_min_chinu[idx]:.2f}\n$\chi^2$: {self.star_min_chi2[idx]:.2f}'
-            info_box = f'{pname}\nBest Fit: {library.replace("_", " ").capitalize()}\n{info_box}\n{lower_info_box}'
-            if not np.isnan(mass):
-                lowest_info_box=f'Mass: {mass.to(u.Msun).to_string(format="latex", precision=3)}\nRadius: {radius.to_string(format="latex", precision=3)}\nDistance: {distance.to(u.kpc).to_string(format="latex", precision=3)}'
+            lower_info_box = rf'$\chi^2$: {self.star_min_chi2[idx]:.2f}\n$\\chi^2_\\nu$: {self.star_min_chinu[idx]:.2f}\n'
+            info_box = f'{pname}\nBest Fit: {library.replace("_", " ").title()}\n{info_box}\n{lower_info_box}'
+            if results is not None:
+                if library in self.parameter_overrides.keys():
+                    grid = f'\nPhysical Parameters\nGrid: {str(self.parameter_overrides[library]["model"]).replace("_", " ").title()}\n'
+
+                    if 'overrides' in results['info'].keys():
+                        srtring = '\n'.join([f'{self._latex_label(key)}: {results["info"]["overrides"][key]}' for key in results["info"]["overrides"].keys() if key not in ['model']])
+                        grid = f'{grid}{srtring}\n'
+
+                else:
+                    grid = ''
+
+                lowest_info_box=f'{grid}Mass: {mass.to(u.Msun).to_string(format="latex", precision=3)}\nRadius: {radius.to_string(format="latex", precision=3)}\nDistance: {distance.to(u.kpc).to_string(format="latex", precision=3)}'
+                # check other keys in results
+                if len(results.keys()) > 3:
+                    for key in results.keys():
+                        if key not in ['mass', 'radius', 'distance', 'info']:
+                            lowest_info_box = f'{lowest_info_box}\n{key}: {results[key].to_string(format="latex", precision=3)}'
                 info_box = f'{info_box}\n{lowest_info_box}'
                 self.plot_model_photometry(best_ix, ax=ax[0], norm = self.star_tnorm[idx, best_ix], color='navy', wav_unit=wav_unit, flux_unit=flux_unit, test_scale=test_scale, label = 'Distance Phot.')
 
@@ -1837,7 +2082,7 @@ class StarFit:
         ax[0].legend()
 
         return fig, ax
-    
+
     def make_cat(
         self,
         save_path: Optional[str] = None,
@@ -1851,7 +2096,7 @@ class StarFit:
             best_template_meta = {
                 meta_name: np.array(
                     [
-                        meta[meta_name] if meta_name in meta.keys() else np.nan 
+                        meta[meta_name] if meta_name in meta.keys() else np.nan
                         for meta in best_model_params
                     ]
                 ).astype(model_param_dtypes[meta_name])
@@ -1883,7 +2128,7 @@ class StarFit:
             dtype = [str, str, float, float, float] + meta_dtypes + list(np.full(phot.shape[1], float)),
         )
         meta = {
-            "scaling_factor": self.scaling_factor,
+            "scaling_factor": self.default_scaling_factor,
             "library_path": self.library_path,
         }
         tab.meta = meta
@@ -1901,7 +2146,7 @@ class StarFit:
         # save as .h5
         if not save_path[-3:] == ".h5":
             save_path = f"{'.'.join(save_path.split('.')[:-1])}.h5"
-        
+
         if not os.path.exists(save_path):
 
             if IDs is not None:
@@ -1911,7 +2156,7 @@ class StarFit:
             else:
                 IDs = np.arange(len(self.star_min_ix)).astype(int)
 
-            libraries = np.array([self.get_template_name(best_ix)[0] 
+            libraries = np.array([self.get_template_name(best_ix)[0]
                 if not best_ix == -1 else "" for best_ix in self.star_min_ix])
             valid_library = libraries != ""
             unique_libraries = np.unique(libraries[valid_library])
@@ -2011,25 +2256,25 @@ class StarFit:
         best_fit_coefficients = self.star_tnorm[input_idx, model_idx]
 
         table = Table.read(path, format='ascii.ecsv', delimiter=' ', names=['wav', 'flux_nu'], units=[u.AA, u.erg/(u.cm**2*u.s*u.Hz)])
-        table['flux_njy'] = best_fit_coefficients * table['flux_nu'].to(u.nJy) * self.scaling_factor
-        
+        table['flux_njy'] = best_fit_coefficients * table['flux_nu'].to(u.nJy) * self.scaling_factors[library]
+
         return table["wav"].to(wav_unit), table['flux_njy'].to(flux_unit)
-        
+
 
     def plot_best_template(self, model_idx, input_idx, ax=None, wav_unit=u.micron, flux_unit=u.nJy, **kwargs):
-        
+
         wav, flux = self.load_SED(model_idx, input_idx, wav_unit=wav_unit, flux_unit=flux_unit)
-        
+
         if ax is None:
             fig, ax = plt.subplots(1, 1, figsize=(6, 4), dpi=200)
             ax.set_xlabel(f'Wavelength ({wav_unit:latex_inline})')
             ax.set_ylabel(f'Flux Density ({flux_unit:latex_inline})')
-        
+
         ax.plot(wav, flux, **kwargs)
 
     def _get_model_path_from_lib_name(self, library, name):
         return f'{self.library_path}/{library}/resampled/{name}'
-    
+
     def get_template_parameters(self, model_idx):
         if model_idx == -1:
             return {}
@@ -2064,7 +2309,7 @@ class StarFit:
         # Create dictionary of views into filter_data with filter names as keys
         filter_idx = {band.split('.')[0]: i for i, band in enumerate(self.model_filters)}
         filter_data = {band: grid_converted[i] for band, i in filter_idx.items()}
-        
+
         parser = FilterArithmeticParser()
 
         x_data = parser.parse_and_evaluate(x, filter_data)
@@ -2081,7 +2326,7 @@ class StarFit:
         if show_fitted_galaxies:
             if getattr(self, 'fnu', None) is None or getattr(self, 'efnu', None) is None or getattr(self, 'bands_to_fit', None) is None:
                 raise Exception('No fitted galaxies to plot.')
-           
+
             # need dictionary matching self.bands_to_fit and self.fnu
             band_data = self.fnu.T
             band_err = self.efnu.T
@@ -2095,11 +2340,11 @@ class StarFit:
 
             x_data = parser.parse_and_evaluate(x, band_data)
             y_data = parser.parse_and_evaluate(y, band_data)
-        
+
         ax.text(0.05, 0.95, f'Libraries:\n{libraries_string}', transform=ax.transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')])
 
         return fig, ax
-    
+
     def filter_template_grid_by_parameter(self, parameter, value, exclude_unparametrized=True, combine='and'):
         '''
         TODO: FINISH THIS
@@ -2127,7 +2372,7 @@ class StarFit:
 
         param_aliases = {'temp': ['t', 'teff', 'temperature', 't_eff', 'temp'],
                         'log_g':['g', 'logg', 'gravity', 'log_g', 'log_g'],
-                        'met':['Z', 'metallicity', 'zmet', 'met'], 
+                        'met':['Z', 'metallicity', 'zmet', 'met'],
                         'co':['c/o', 'co', 'c_o', 'co_ratio'],
                         'f':['f', 'fparam', 'f_param']}
 
@@ -2143,7 +2388,7 @@ class StarFit:
         temp_ranges = {'T':(575, 1200), 'Y':(275, 550), 'L':(1300, 2400)}
 
         for param, val in zip(parameter, value):
-            
+
             param_use = param_aliases.get(param.lower(), param.lower())
 
             # common aliases
@@ -2172,9 +2417,9 @@ class StarFit:
             file_path = f'{self.library_path}/{model_file_name}'
 
         with h5.File(file_path, 'a') as f:
-            f.create_dataset(f'range/min_wav', data=mins)
-            f.create_dataset(f'range/max_wav', data=maxs)
-    
+            f.create_dataset('range/min_wav', data=mins)
+            f.create_dataset('range/max_wav', data=maxs)
+
     def wavelength_range_of_library(self, library):
         min_wav = np.max(self.template_ranges[library], axis=0)[0]
         max_wav = np.min(self.template_ranges[library], axis=0)[1]
@@ -2204,19 +2449,19 @@ class StarFit:
         # Get unique temperature and log_g values to create the grid
         temp_unique = np.sort(np.unique(table['temp']))
         logg_unique = np.sort(np.unique(table['log_g']))
-        
+
         # Check if grid is regular
         if len(temp_unique) * len(logg_unique) != len(table):
             print(f"Warning: Data may not form a regular grid! Expected {len(temp_unique) * len(logg_unique)} points, got {len(table)}")
-        
+
         # Create empty 2D arrays for mass and radius
         mass_grid = np.full((len(temp_unique), len(logg_unique)), np.nan)
         radius_grid = np.full((len(temp_unique), len(logg_unique)), np.nan)
-        
+
         # Create dictionaries to map values to indices
         temp_to_idx = {temp: i for i, temp in enumerate(temp_unique)}
         logg_to_idx = {logg: i for i, logg in enumerate(logg_unique)}
-        
+
         # Fill the grids with values
         for row in table:
             i = temp_to_idx[row['temp']]
@@ -2233,9 +2478,9 @@ class StarFit:
                 radius_grid[i] = np.nan
                 idx_to_remove.append(i)
                 print(f"Removing temperature value {temp_unique[i]}")
-        
+
         temp_unique = np.delete(temp_unique, idx_to_remove)
-        
+
         idx_to_remove = []
         for j in range(len(logg_unique)):
             if np.isnan(mass_grid[:, j]).sum() > 0.9 * len(temp_unique):
@@ -2243,13 +2488,13 @@ class StarFit:
                 radius_grid[:, j] = np.nan
                 idx_to_remove.append(j)
                 print(f"Removing log g value {logg_unique[j]}")
-        
+
         logg_unique = np.delete(logg_unique, idx_to_remove)
-                
+
         # Delete all all NaN rows and columns
         mass_grid = mass_grid[~np.all(np.isnan(mass_grid), axis=1)]
         mass_grid =  mass_grid[:, ~np.all(np.isnan(mass_grid), axis=0)]
-        
+
         radius_grid = radius_grid[~np.all(np.isnan(radius_grid), axis=1)]
         radius_grid =  radius_grid[:, ~np.all(np.isnan(radius_grid), axis=0)]
 
@@ -2258,14 +2503,14 @@ class StarFit:
             (temp_unique, logg_unique), mass_grid,
             bounds_error=False, fill_value=None, method = method,
         )
-        
+
         radius_interpolator = RegularGridInterpolator(
             (temp_unique, logg_unique), radius_grid,
             bounds_error=False, fill_value=None, method = method,
         )
-        
+
         return mass_interpolator, radius_interpolator, (temp_unique, logg_unique)
-    
+
 
     def visualize_grid(self, table, temp_unique, logg_unique, mass_interp, radius_interp, plot_name = 'stellar_parameters_visualization.png'):
         """
@@ -2275,17 +2520,17 @@ class StarFit:
         temp_fine = np.linspace(temp_unique.min(), temp_unique.max(), 300)
         logg_fine = np.linspace(logg_unique.min(), logg_unique.max(), 100)
         temp_grid, logg_grid = np.meshgrid(temp_fine, logg_fine)
-        
+
         # Interpolate mass and radius on fine grid
         mass_fine, radius_fine = self.interpolate_stellar_parameters(
             temp_grid.flatten(), logg_grid.flatten(), mass_interp, radius_interp
         )
         mass_fine = mass_fine.reshape(temp_grid.shape)
         radius_fine = radius_fine.reshape(temp_grid.shape)
-        
+
         # Create figure with subplots
         fig = plt.figure(figsize=(15, 10), facecolor='white', dpi=200)
-        
+
         # Plot 1: Mass contour plot
         ax1 = fig.add_subplot(221)
         contour1 = ax1.contourf(temp_fine, logg_fine, mass_fine, 20, cmap='viridis', norm=LogNorm())
@@ -2295,10 +2540,10 @@ class StarFit:
         ax1.set_xlim(temp_unique.min(), temp_unique.max())
         ax1.set_ylim(logg_unique.min(), logg_unique.max())
         plt.colorbar(contour1, ax=ax1, label='Mass (M♃)')
-        
+
         # Add data points to mass plot
         ax1.scatter(table['temp'], table['log_g'], c='red', s=10, alpha=0.5)
-        
+
         # Plot 2: Radius contour plot
         ax2 = fig.add_subplot(222)
         contour2 = ax2.contourf(temp_fine, logg_fine, radius_fine, 20, cmap='plasma')
@@ -2308,7 +2553,7 @@ class StarFit:
         ax2.set_xlim(temp_unique.min(), temp_unique.max())
         ax2.set_ylim(logg_unique.min(), logg_unique.max())
         plt.colorbar(contour2, ax=ax2, label='Radius (R☉)')
-        
+
         # Plot 3: 3D surface plot for Mass
         ax3 = fig.add_subplot(223, projection='3d')
         surf1 = ax3.plot_surface(temp_grid, logg_grid, mass_fine, cmap='viridis', alpha=0.8)
@@ -2316,7 +2561,7 @@ class StarFit:
         ax3.set_ylabel('log g')
         ax3.set_zlabel('Mass (M♃)')
         ax3.set_title('Stellar Mass 3D Surface')
-        
+
         # Plot 4: 3D surface plot for Radius
         ax4 = fig.add_subplot(224, projection='3d')
         surf2 = ax4.plot_surface(temp_grid, logg_grid, radius_fine, cmap='plasma', alpha=0.8)
@@ -2324,11 +2569,11 @@ class StarFit:
         ax4.set_ylabel('log g')
         ax4.set_zlabel('Radius (R☉)')
         ax4.set_title('Stellar Radius 3D Surface')
-        
+
         plt.tight_layout()
         plt.savefig(plot_name, dpi=300)
         plt.close(fig)
-        
+
         print(f"Grid visualization saved to {plot_name}")
 
 
@@ -2338,10 +2583,10 @@ class StarFit:
                                         'unit':u.kpc,
                                         'coord':"galactocentric",
                                         'annotation':True,
-                                        'figsize':(10, 8)},                 
+                                        'figsize':(10, 8)},
                              **kwargs):
 
-        assert idxs is not None or distance is not None, 'Provide either an index or a distance.'
+        assert idxs is not None or distances is not None, 'Provide either an index or a distance.'
         assert type(distances) is u.Quantity if distances is not None else True, 'Distance must be a Quantity.'
         assert coord_system in ['galactic', 'equatorial', 'galactocentric'], 'Coordinate system must be either galactic, galactocentric or equatorial.'
         assert len(ra) == len(dec), 'RA and Dec must be the same length.'
@@ -2353,19 +2598,18 @@ class StarFit:
             assert hasattr(self, 'star_min_ix'), 'Fit the catalogue first.'
             assert hasattr(self, 'star_tnorm'), 'Fit the catalogue first.'
 
-            distances = [self.get_physical_params(self.star_min_ix[idx], self.star_tnorm[idx, self.star_min_ix[idx]])[2] for idx in idxs]
-    
-        
+            distances = [self.get_physical_params(self.star_min_ix[idx], self.star_tnorm[idx, self.star_min_ix[idx]])['distance'] for idx in idxs]
+
+        assert len(idxs) > 0 and len(ra) > 0 and len(dec) > 0 and len(distances) > 0, 'No valid data provided.'
+
         fig = None
         if ax is None:
-            fig = plt.figure(figsize=(6, 4), dpi=200, facecolor='white') 
+            fig = plt.figure(figsize=(6, 4), dpi=200, facecolor='white')
             if plot_3d:
                 ax = fig.add_subplot(111, projection='3d')
             else:
                 ax = fig.add_subplot(111)
 
-
-       
         coords_icrs = SkyCoord(ra=ra, dec=dec, distance=distances, frame='icrs')
 
         if coord_system == 'galactic':
@@ -2373,13 +2617,12 @@ class StarFit:
             ax.scatter(coords_galactic.l, coords_galactic.b, **kwargs)
 
         elif coord_system == 'galactocentric':
-            galcen_frame = Galactocentric
-            coords_galactocentric = coords_icrs.transform_to(galcen_frame)
+            print(distances)
+
+            coords_galactocentric = coords_icrs.transform_to(Galactocentric)
 
             dummy = SkyCoord(ra=10*u.deg, dec=10*u.deg, distance=0*u.pc, frame='icrs')
-            coords_galactocentric_dummy = dummy.transform_to(galcen_frame)
-            
-            
+            coords_galactocentric_dummy = dummy.transform_to(Galactocentric)
 
             if plot_3d:
                 ax.scatter(coords_galactocentric.x, coords_galactocentric.y, coords_galactocentric.z, **kwargs)
@@ -2401,16 +2644,16 @@ class StarFit:
                     circ = Circle((0, 0), coords_galactocentric_dummy.galcen_distance.to(u.pc).value, color=c, alpha=1, fill=False)
                     ax.add_patch(circ)
                     art3d.pathpatch_2d_to_3d(circ, z=thi, zdir="z")
-                
+
             else:
-                
+
                 try:
-                    
+
                     from mw_plot import MWFaceOn
-                    plt.close() 
+                    plt.close()
 
                     ax = MWFaceOn(
-                        
+
                         **mw_fit_kwargs
                     )
                     # plot solar system
@@ -2420,13 +2663,13 @@ class StarFit:
                     ax.ax.legend().set_visible(False)
                 except ImportError:
                     pass
-                
+
                 ax.scatter(-1*coords_galactocentric.x, coords_galactocentric.y, **kwargs)
 
         return ax
-    
-    
-        
+
+
+
 # To Do
 # Distances based on normalization - done
 # Plotting on galactic coordinates if ra and dec are provided - done
@@ -2449,7 +2692,7 @@ class FilterArithmeticParser:
         "(F356W + F444W) / 2"     -> average of filters
         "F356W - 0.5 * F444W"     -> weighted subtraction
     """
-    
+
     def __init__(self):
         self.operators = {
             '+': operator.add,
@@ -2457,15 +2700,15 @@ class FilterArithmeticParser:
             '*': operator.mul,
             '/': operator.truediv
         }
-        
+
         # Regular expression pattern for tokenizing
         self.pattern = r'(\d*\.\d+|\d+|[A-Za-z]\d+[A-Za-z]+|\+|\-|\*|\/|\(|\))'
-    
+
     def tokenize(self, expression: str) -> List[str]:
         """Convert string expression into list of tokens."""
         tokens = re.findall(self.pattern, expression)
         return [token.strip() for token in tokens if token.strip()]
-    
+
     def is_number(self, token: str) -> bool:
         """Check if token is a number."""
         try:
@@ -2473,11 +2716,11 @@ class FilterArithmeticParser:
             return True
         except ValueError:
             return False
-    
+
     def is_filter(self, token: str) -> bool:
         """Check if token is a filter name."""
         return bool(re.match(r'^[A-Za-z]\d+[A-Za-z]+$', token))
-    
+
     def evaluate(self, tokens: List[str], filter_data: Dict[str, Union[float, np.ndarray]]) -> Union[float, np.ndarray]:
         """
         Evaluate a list of tokens using provided filter data.
@@ -2491,27 +2734,27 @@ class FilterArithmeticParser:
         """
         output_stack = []
         operator_stack = []
-        
+
         precedence = {'+': 1, '-': 1, '*': 2, '/': 2}
-        
+
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            
+
             if token == '(':
                 operator_stack.append(token)
-            
+
             elif token == ')':
                 while operator_stack and operator_stack[-1] != '(':
                     self._apply_operator(operator_stack, output_stack, filter_data)
                 operator_stack.pop()  # Remove '('
-            
+
             elif token in self.operators:
-                while (operator_stack and operator_stack[-1] != '(' and 
+                while (operator_stack and operator_stack[-1] != '(' and
                        precedence.get(operator_stack[-1], 0) >= precedence[token]):
                     self._apply_operator(operator_stack, output_stack, filter_data)
                 operator_stack.append(token)
-            
+
             else:  # Number or filter name
                 if self.is_number(token):
                     value = float(token)
@@ -2522,25 +2765,25 @@ class FilterArithmeticParser:
                 else:
                     raise ValueError(f"Invalid token: {token}")
                 output_stack.append(value)
-            
+
             i += 1
-        
+
         while operator_stack:
             self._apply_operator(operator_stack, output_stack, filter_data)
-        
+
         if len(output_stack) != 1:
             raise ValueError("Invalid expression")
-        
+
         return output_stack[0]
-    
-    def _apply_operator(self, operator_stack: List[str], output_stack: List[Union[float, np.ndarray]], 
+
+    def _apply_operator(self, operator_stack: List[str], output_stack: List[Union[float, np.ndarray]],
                        filter_data: Dict[str, Union[float, np.ndarray]]) -> None:
         """Apply operator to the top two values in the output stack."""
         operator = operator_stack.pop()
         b = output_stack.pop()
         a = output_stack.pop()
         output_stack.append(self.operators[operator](a, b))
-    
+
     def parse_and_evaluate(self, expression: str, filter_data: Dict[str, Union[float, np.ndarray]]) -> Union[float, np.ndarray]:
         """
         Parse and evaluate a filter arithmetic expression.
@@ -2557,7 +2800,7 @@ class FilterArithmeticParser:
 
 
 
-def iterate_model_parameters(model_parameters: Dict[str, Dict[str, List[Any]]], 
+def iterate_model_parameters(model_parameters: Dict[str, Dict[str, List[Any]]],
                            model_name: str = None) -> Iterator[Tuple[str, Dict[str, Any]]]:
     """
     Iterate over all parameter combinations for specified model(s) in model_parameters.
@@ -2578,16 +2821,16 @@ def iterate_model_parameters(model_parameters: Dict[str, Dict[str, List[Any]]],
             # etc...
     """
     models_to_iterate = [model_name] if model_name else model_parameters.keys()
-    
+
     for model in models_to_iterate:
         if model not in model_parameters:
             raise ValueError(f"Model {model} not found in model_parameters")
-            
+
         # Get parameter names and their possible values
         params = model_parameters[model]
         param_names = list(params.keys())
         param_values = list(params.values())
-        
+
         # Use itertools.product to generate all combinations
         for combination in product(*param_values):
             # Create dictionary of parameter names and their values for this combination
@@ -2603,7 +2846,7 @@ def find_bands(table, flux_wildcard='FLUX_APER_*_aper_corr'):#, error_wildcard='
     return flux_bands
 
 def provide_phot(table, bands=None, flux_wildcard='FLUX_APER_*_aper_corr_Jy', error_wildcard='FLUXERR_APER_*_loc_depth_10pc_Jy', min_percentage_error=0.1, flux_unit=u.Jy, multi_item_columns_slice=None):
-    
+
     if bands is None:
         bands = find_bands(table)
 
