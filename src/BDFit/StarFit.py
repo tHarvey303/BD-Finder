@@ -1878,6 +1878,11 @@ class StarFit:
         self.reduced_template_grid = grid[self.mask, :].T
 
         # Reorder photometry from fitted_bands to self.bands_to_fit order
+        # phot_bands and fitted_bands are identical, so all bands in
+        # bands_to_fit are guaranteed to be in phot_bands
+        assert all(
+            band in phot_bands for band in self.bands_to_fit
+        ), "Unexpected: bands_to_fit contains bands not in phot_bands"
         phot_to_model_order = np.array(
             [phot_bands.index(band) for band in self.bands_to_fit]
         )
