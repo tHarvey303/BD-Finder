@@ -1870,25 +1870,36 @@ class StarFit:
         print(f'Fitting with {", ".join(libraries_to_fit)} libraries with {np.shape(grid)[1]} templates.')
 
         mask = np.array([i in fitted_bands for i in self.model_filters])
-        # Check actual bands are in the same order as self.model_filters
-        self.bands_to_fit = fitted_bands
+        # bands_to_fit follows self.model_filters order (after filtering)
+        self.bands_to_fit = [
+            band for band in self.model_filters if band in fitted_bands
+        ]
         self.mask = mask
         self.reduced_template_grid = grid[self.mask, :].T
 
-        idxs = np.array([i for i, band in enumerate(phot_bands) if band in self.bands_to_fit])
+        # Reorder photometry from fitted_bands to self.bands_to_fit order
+        # phot_bands and fitted_bands are identical, so all bands in
+        # bands_to_fit are guaranteed to be in phot_bands
+        assert all(
+            band in phot_bands for band in self.bands_to_fit
+        ), "Unexpected: bands_to_fit contains bands not in phot_bands"
+        phot_to_model_order = np.array(
+            [phot_bands.index(band) for band in self.bands_to_fit]
+        )
+        idxs = phot_to_model_order
 
         total_filter_mask = np.ones_like(self.reduced_template_grid, dtype=bool)
         for library in libraries_to_fit:
-            filter_mask = self._catalogue_mask_bands(fitted_bands, library)
+            filter_mask = self._catalogue_mask_bands(self.bands_to_fit, library)
             total_filter_mask[self.idx_ranges[library][0]:self.idx_ranges[library][1], :] = filter_mask
 
         self.total_filter_mask = total_filter_mask
 
-        print(f'Fitting {len(fitted_bands)} bands: {fitted_bands}')
+        print(f'Fitting {len(self.bands_to_fit)} bands: {self.bands_to_fit}')
 
         # Generate ok_data to mask nan fluxes and nan errors
 
-        self.NFILT = len(fitted_bands)
+        self.NFILT = len(self.bands_to_fit)
         self.fnu = self.fnu[:, idxs]
         self.efnu = self.efnu[:, idxs]
         ok_data = np.isfinite(self.fnu) & np.isfinite(self.efnu) & (self.efnu > 0)
