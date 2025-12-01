@@ -156,7 +156,7 @@ exclude = [
 ]
 
 # PEP-8 line length
-line-length = 79
+line-length = 100
 indent-width = 4
 
 
@@ -193,6 +193,3 @@ skip-magic-trailing-comma = false
 
 # Like Black, automatically detect the appropriate line ending.
 line-ending = "auto"
-
-# Increase maximum line length
-line-length = 100

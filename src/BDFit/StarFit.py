@@ -119,7 +119,9 @@ default_bands = ["ACS_WFC.F435W", "ACS_WFC.F475W", "ACS_WFC.F606W", "ACS_WFC.F62
                 "F277W", "F300M", "F335M", "F356W", "F360M", "F410M", "F430M",
                 "F444W", "F460M", "F480M", "F560W", "F770W",
                 "NISP.Y", "NISP.J", "NISP.H", "VIS.vis",
-                "VISTA.Z", "VISTA.Y", "VISTA.J", "VISTA.H", "VISTA.Ks"]
+                "VISTA.Z", "VISTA.Y", "VISTA.J", "VISTA.H", "VISTA.Ks", "IRAC.I1", "IRAC.I2",
+                "MegaCam.u", "MegaCam.g", "MegaCam.r", "MegaCam.i", "MegaCam.z",
+                "HSC.g", "HSC.r", "HSC.i", "HSC.z", "HSC.Y"]
 
  # "F1000W", "F1130W", "F1280W", "F1500W", "F1800W", "F2100W", "F2550W"]
 
@@ -129,7 +131,7 @@ code_dir = os.path.dirname(os.path.abspath(__file__))
 class StarFit:
     def __init__(self, libraries = ["sonora_bobcat", "sonora_cholla", "sonora_elf_owl", 'sonora_diamondback', 'low-z', 'ATMO2020'], library_path='internal', compile_bands='default',
                 parameter_overrides={'sonora_cholla':{'model':'sonora_bobcat', 'met':'0.0', 'co':''}, 'sonora_elf_owl':{'model':'sonora_bobcat', 'met':'closest', 'co':'closest'}},
-                facilities_to_search={"JWST": ["NIRCam", "MIRI"], "HST": ["ACS", "WFC3"], "Euclid":["NISP", "VIS"], "Paranal":["VIRCAM"]}, resample_step=50, constant_R=True, R=300, min_wav=0.3 * u.micron,
+                facilities_to_search={"JWST": ["NIRCam", "MIRI"], "HST": ["ACS", "WFC3"], "Euclid":["NISP", "VIS"], "Paranal":["VIRCam"], "Spitzer":["IRAC"], "CFHT":["MegaCam"], "Subaru":['HSC']}, resample_step=50, constant_R=True, R=300, min_wav=0.3 * u.micron,
                 max_wav=12 * u.micron, default_scaling_factor=1e-22, verbose=False):
 
         '''
@@ -271,14 +273,14 @@ class StarFit:
             library = new_library
 
         if library == 'sonora_bobcat':
-            if parameters['co'] not in ['', "b'nan'"]:
+            if parameters['co'] not in ['', "b'nan'", 'nan']:
                 table_name = f'flux_table_JWST_m+0.0_co{parameters["co"]}'
             else:
                 met = parameters["met"]
                 if met == '0.0':
                     met = '+0.0'
                 table_name = f'flux_table_JWST{met}'
-
+            #print(table_name, parameters['co'])
             path = f'{self.library_path}/{library}_evolution/evolution_and_photometery/photometry_tables/{table_name}'
 
             # Could use these tables instead?
@@ -433,12 +435,11 @@ class StarFit:
             # Need to deal with distances not always matching num(tables) due to not finding a match.
             distance = results['distance']
 
-            print(distance)
+            #print(distance)
 
             for pos, tab in enumerate(table):
                 temp = float(params['temp'])
                 log_g = float(params['log_g'])
-                print(tab.colnames)
                 row = tab[np.abs(tab['Teff'] - temp) < 25]
                 row = row[np.abs(row['Gravity'] - log_g) < 0.1]
                 if len(row) == 0:
@@ -609,11 +610,13 @@ class StarFit:
                 if library not in self.template_parameters.keys():
                     self.template_parameters[library] = {}
                 for key in list(file['meta'].keys()):
-                    key = str(key)
-                    self.template_parameters[library][key] = file['meta'][key][:]
+                    skey = str(key)
+                    #print(file['meta'][skey][:])
+                    #print(self.template_parameters[library][skey], file['meta'][skey][:])
+                    self.template_parameters[library][skey] = file['meta'][skey][:]
                     # parse string metas if needed
-                    if any([isinstance(i, bytes) for i in self.template_parameters[library][key]]):
-                        self.template_parameters[library][key] = [i.decode('utf-8') for i in self.template_parameters[library][key]]
+                    if any([isinstance(i, bytes) for i in self.template_parameters[library][skey]]):
+                        self.template_parameters[library][skey] = [i.decode('utf-8') for i in self.template_parameters[library][skey]]
 
             if 'range' in file:
                 min_wav = file['range']['min_wav'][()]
@@ -665,6 +668,10 @@ class StarFit:
         # TODO: This currently does nothing
         # From Sonora Elf Owl
         temp_range = {'Y':(275, 550), 'T':(575, 1200), 'L':(1300, 2400)}
+
+        for sp_type, (t_min, t_max) in temp_range.items():
+            if temp >= t_min and temp <= t_max:
+                return sp_type
 
     def setup_libraries(self, path='sonora_data/', libraries = ["sonora_bobcat", "sonora_cholla", "sonora_elf_owl", 'sonora_diamondback', 'low-z'], urls=file_urls):
         for library in libraries:
@@ -798,7 +805,8 @@ class StarFit:
             file.create_dataset('names', data=names)
             file.close()
 
-    def build_template_grid(self, bands, model_versions=['sonora_bobcat', 'sonora_cholla'], model_path='/nvme/scratch/work/tharvey/brown_dwarfs/models/', overwrite=False, output_file_name='photometry_grid.hdf5'):
+    def build_template_grid(self, bands, model_versions=['sonora_bobcat', 'sonora_cholla'], 
+            model_path='/nvme/scratch/work/tharvey/brown_dwarfs/models/', overwrite=False, output_file_name='photometry_grid.hdf5'):
 
         if type(model_versions) == str:
             model_versions = [model_versions]
@@ -962,7 +970,7 @@ class StarFit:
             self.template_grids[model_version] = template_grid
             self.template_bands[model_version] = bands
             self.template_names[model_version] = names
-            self.template_parameters[model_version] = metas.keys()
+            self.template_parameters[model_version] = {}
             self.add_min_max_wavelengths_to_h5(model_version)
 
     def _deduplicate_templates(
@@ -1624,7 +1632,7 @@ class StarFit:
         _den[_den == 0] = np.nan  # Use NaN instead of 0 to properly identify invalid normalizations
         star_tnorm = _num/_den
 
-        print(np.shape(_wht), np.shape(filter_mask), np.shape(template_grid), np.shape(star_flux), np.shape(_num))
+        #print(np.shape(_wht), np.shape(filter_mask), np.shape(template_grid), np.shape(star_flux), np.shape(_num))
 
         # Chi-squared calculation
         star_chi2 = np.zeros(star_tnorm.shape, dtype=np.float32)
@@ -1771,7 +1779,7 @@ class StarFit:
         efnu = np.atleast_2d(efnu)
 
         assert len(fnu) == len(efnu), 'Flux and error arrays must be the same length.'
-        assert len(fnu[0]) == len(bands), 'Flux and error arrays must have the same number of bands.'
+        assert len(fnu[0]) == len(bands), f'Flux and error arrays must have the same number of bands, got {len(fnu[0])} and {len(bands)}.'
         assert type(fnu) is u.Quantity, 'Fluxes must be astropy Quantities.'
         assert type(efnu) is u.Quantity, 'Errors must be astropy Quantities.'
 
@@ -1823,12 +1831,13 @@ class StarFit:
                 phot_bands.append(band)
                 fitted_bands.append(band)
                 band_compar_dict[band] = band
+                #print(f'Found {band}')
                 band_idx.append(self.model_filters.index(band))
 
         '''
         min_wav, max_wav = self.wavelength_range_of_bands(fitted_bands)
         check_band_ranges = False
-    
+
         extreme_min_wav, extreme_max_wav = 0 * u.um, np.inf * u.um
         for library in libraries_to_fit:
             library_min_wav, library_max_wav = self.wavelength_range_of_library(library)
@@ -1846,7 +1855,7 @@ class StarFit:
                 if max_wav < library_extreme_max_wav:
                     print(f'You can extend this range to {library_extreme_max_wav.to(u.um):.2f} to include the maximum wavelength of the library {library} by recompting the photometry grid.')
                 check_band_ranges = True
-            
+
             extreme_min_wav = max(extreme_min_wav, library_extreme_min_wav)
             extreme_max_wav = min(extreme_max_wav, library_extreme_max_wav)
 
@@ -1858,7 +1867,7 @@ class StarFit:
             elif outside_wav_range_behaviour == 'subset':
                 print('Subsetting templates to fit to the wavelength range of the bands.')
                 libraries_to_fit = [library for library in libraries_to_fit if self.wavelength_range_of_library(library)[0] < min_wav and self.wavelength_range_of_library(library)[1] > max_wav]
-                
+
                 if len(libraries_to_fit) == 0:
                     raise Exception('No libraries to fit. Please provide bands that are within the wavelength range of the library or change the value of outside_wav_range_behaviour.')
             else:
@@ -1872,14 +1881,22 @@ class StarFit:
         mask = np.array([i in fitted_bands for i in self.model_filters])
         # Check actual bands are in the same order as self.model_filters
         self.bands_to_fit = fitted_bands
+        self.bands_to_fit = [
+            band for band in self.model_filters if band in fitted_bands
+        ]
         self.mask = mask
         self.reduced_template_grid = grid[self.mask, :].T
 
         idxs = np.array([i for i, band in enumerate(phot_bands) if band in self.bands_to_fit])
 
+        phot_to_model_order = np.array(
+            [phot_bands.index(band) for band in self.bands_to_fit]
+        )
+        idxs = phot_to_model_order
+
         total_filter_mask = np.ones_like(self.reduced_template_grid, dtype=bool)
         for library in libraries_to_fit:
-            filter_mask = self._catalogue_mask_bands(fitted_bands, library)
+            filter_mask = self._catalogue_mask_bands(self.bands_to_fit, library)
             total_filter_mask[self.idx_ranges[library][0]:self.idx_ranges[library][1], :] = filter_mask
 
         self.total_filter_mask = total_filter_mask
@@ -2029,6 +2046,7 @@ class StarFit:
             ax[0].scatter(wavs[~unmasked_bands], plot_model_phot[~unmasked_bands], label='Masked Phot.', facecolor='navy', edgecolor='red', zorder=10, alpha=0.5)
 
             library, name = self.get_template_name(best_ix)
+
             self.plot_best_template(best_ix, idx, ax=ax[0], color='navy', wav_unit=wav_unit, flux_unit=flux_unit, linestyle='solid', lw=1)
             params = self._extract_model_meta(library, name)
             latex_labels = [self._latex_label(param) for param in params.keys()]
@@ -2042,7 +2060,7 @@ class StarFit:
                 radius = results['radius']
 
             info_box = '\n'.join([f'{latex_labels[i]}: {params[param]}{self.param_unit(param):latex}' for i, param in enumerate(params.keys())])
-            lower_info_box = rf'$\chi^2$: {self.star_min_chi2[idx]:.2f}\n$\\chi^2_\\nu$: {self.star_min_chinu[idx]:.2f}\n'
+            lower_info_box = rf'$\chi^2$: {self.star_min_chi2[idx]:.2f}\\n$\chi^2_\nu$: {self.star_min_chinu[idx]:.2f}\n'
             info_box = f'{pname}\nBest Fit: {library.replace("_", " ").title()}\n{info_box}\n{lower_info_box}'
             if results is not None:
                 if library in self.parameter_overrides.keys():
@@ -2289,7 +2307,8 @@ class StarFit:
         meta = table.meta
         return meta
 
-    def color_color(self, x, y, libraries='all', unit=u.ABmag, show_fitted_galaxies=False, color_by=None, **kwargs):
+    def color_color(self, x, y, libraries='all', unit=u.ABmag, filter_by=None,
+                    show_fitted_galaxies=False, color_by=None, **kwargs):
 
         if libraries == 'all':
             libraries = self.libraries
@@ -2308,6 +2327,8 @@ class StarFit:
 
         # Create dictionary of views into filter_data with filter names as keys
         filter_idx = {band.split('.')[0]: i for i, band in enumerate(self.model_filters)}
+        filter_idx = {band:i for i, band in enumerate(self.model_filters)}
+
         filter_data = {band: grid_converted[i] for band, i in filter_idx.items()}
 
         parser = FilterArithmeticParser()
@@ -2315,10 +2336,35 @@ class StarFit:
         x_data = parser.parse_and_evaluate(x, filter_data)
         y_data = parser.parse_and_evaluate(y, filter_data)
 
-        if color_by is not None:
-            pass
+        if filter_by is not None:
+            filter_mask = parser.parse_and_evaluate(filter_by, filter_data).astype(bool)
+            x_data = x_data[filter_mask]
+            y_data = y_data[filter_mask]
+            ax.set_title(f'Filtered by: {filter_by}')
+        else:
+            filter_mask = np.ones_like(x_data, dtype=bool)
 
-        ax.scatter(x_data, y_data, **kwargs)
+        if color_by is not None:
+            if color_by == 'libraries':
+                ncolors = len(libraries)
+                idxs = self.idx_ranges
+                colors = plt.cm.viridis(np.linspace(0, 1, ncolors))
+                for i, library in enumerate(libraries):
+                    idx_range = range(idxs[library][0], idxs[library][1])
+                    ax.scatter(x_data[idx_range], y_data[idx_range], color=colors[i], label=library.replace('_', ' ').title(), **kwargs)
+            elif color_by in model_param_dtypes.keys():
+                # Color by a model parameter. Need to assemble the parameter data for all libraries
+                param_data = []
+                for library in libraries:
+                    param_data.append(self.template_parameters[library][color_by])
+                param_data = np.concatenate(param_data)
+                sc = ax.scatter(x_data, y_data, c=param_data[filter_mask], cmap='viridis', **kwargs)
+                cbar = plt.colorbar(sc, ax=ax)
+                cbar.set_label(self._latex_label(color_by))
+            else:
+                raise Exception(f'color_by {color_by} not recognized.')
+        else:
+            ax.scatter(x_data, y_data, **kwargs)
         ax.set_xlabel(x)
         ax.set_ylabel(y)
         libraries_string = '\n'.join(libraries)
@@ -2340,9 +2386,10 @@ class StarFit:
 
             x_data = parser.parse_and_evaluate(x, band_data)
             y_data = parser.parse_and_evaluate(y, band_data)
-
-        ax.text(0.05, 0.95, f'Libraries:\n{libraries_string}', transform=ax.transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')])
-
+        if color_by is not None and color_by != 'libraries':
+            ax.text(0.05, 0.95, f'Libraries:\n{libraries_string}', transform=ax.transAxes, fontsize=8, verticalalignment='top', path_effects=[pe.withStroke(linewidth=2, foreground='w')])
+        else:
+            ax.legend()
         return fig, ax
 
     def filter_template_grid_by_parameter(self, parameter, value, exclude_unparametrized=True, combine='and'):
@@ -2423,7 +2470,7 @@ class StarFit:
     def wavelength_range_of_library(self, library):
         min_wav = np.max(self.template_ranges[library], axis=0)[0]
         max_wav = np.min(self.template_ranges[library], axis=0)[1]
-        print(min_wav, max_wav)
+        #print(min_wav, max_wav)
         return min_wav, max_wav
 
     def extreme_wavelength_range_of_library(self, library):
@@ -2679,30 +2726,40 @@ class StarFit:
 
 class FilterArithmeticParser:
     """
-    Parser for filter arithmetic expressions.
+    Parser for filter arithmetic expressions including comparisons.
     Supports operations like:
     - Basic arithmetic: +, -, *, /
+    - Comparisons: <, >, <=, >=, ==, !=
     - Parentheses for grouping
     - Constants and coefficients
     
     Examples:
-        "F356W"                    -> single filter
         "F356W + F444W"           -> filter addition
-        "2 * F356W"               -> coefficient multiplication
-        "(F356W + F444W) / 2"     -> average of filters
-        "F356W - 0.5 * F444W"     -> weighted subtraction
+        "F356W > 0.5"             -> boolean mask where filter > 0.5
+        "F356W / F444W >= 1.2"    -> boolean mask for color cut
     """
 
     def __init__(self):
+        # Added comparison operators to the map
         self.operators = {
             '+': operator.add,
             '-': operator.sub,
             '*': operator.mul,
-            '/': operator.truediv
+            '/': operator.truediv,
+            '>': operator.gt,
+            '<': operator.lt,
+            '>=': operator.ge,
+            '<=': operator.le,
+            '==': operator.eq,
+            '!=': operator.ne
         }
 
-        # Regular expression pattern for tokenizing
-        self.pattern = r'(\d*\.\d+|\d+|[A-Za-z]\d+[A-Za-z]+|\+|\-|\*|\/|\(|\))'
+        # Updated regex:
+        # 1. Identifiers: [A-Za-z_][A-Za-z0-9_.]*
+        # 2. Numbers: \d+(?:\.\d+)?
+        # 3. Multi-char operators: <=, >=, ==, != (Must come before single chars)
+        # 4. Single-char operators: <, >, +, -, *, /, (, )
+        self.pattern = r'([A-Za-z_][A-Za-z0-9_.]*|\d+(?:\.\d+)?|<=|>=|==|!=|[<>\+\-\*\/\(\)])'
 
     def tokenize(self, expression: str) -> List[str]:
         """Convert string expression into list of tokens."""
@@ -2719,7 +2776,8 @@ class FilterArithmeticParser:
 
     def is_filter(self, token: str) -> bool:
         """Check if token is a filter name."""
-        return bool(re.match(r'^[A-Za-z]\d+[A-Za-z]+$', token))
+        # Regex matches standard variable names
+        return bool(re.match(r'^[A-Za-z_][A-Za-z0-9_.]*$', token))
 
     def evaluate(self, tokens: List[str], filter_data: Dict[str, Union[float, np.ndarray]]) -> Union[float, np.ndarray]:
         """
@@ -2730,12 +2788,20 @@ class FilterArithmeticParser:
             filter_data: Dictionary mapping filter names to their values
             
         Returns:
-            Result of the arithmetic operations
+            Result of the arithmetic or comparison operations (float or array)
         """
         output_stack = []
         operator_stack = []
 
-        precedence = {'+': 1, '-': 1, '*': 2, '/': 2}
+        # Updated precedence:
+        # Level 3: Multiplication/Division
+        # Level 2: Addition/Subtraction
+        # Level 1: Comparisons (lowest priority, evaluated last)
+        precedence = {
+            '*': 3, '/': 3,
+            '+': 2, '-': 2,
+            '>': 1, '<': 1, '>=': 1, '<=': 1, '==': 1, '!=': 1
+        }
 
         i = 0
         while i < len(tokens):
@@ -2750,6 +2816,7 @@ class FilterArithmeticParser:
                 operator_stack.pop()  # Remove '('
 
             elif token in self.operators:
+                # While top of stack has greater or equal precedence, apply it
                 while (operator_stack and operator_stack[-1] != '(' and
                        precedence.get(operator_stack[-1], 0) >= precedence[token]):
                     self._apply_operator(operator_stack, output_stack, filter_data)
@@ -2779,10 +2846,13 @@ class FilterArithmeticParser:
     def _apply_operator(self, operator_stack: List[str], output_stack: List[Union[float, np.ndarray]],
                        filter_data: Dict[str, Union[float, np.ndarray]]) -> None:
         """Apply operator to the top two values in the output stack."""
-        operator = operator_stack.pop()
-        b = output_stack.pop()
-        a = output_stack.pop()
-        output_stack.append(self.operators[operator](a, b))
+        op_symbol = operator_stack.pop()
+        right = output_stack.pop()
+        left = output_stack.pop()
+        
+        # Apply the operator function (e.g., operator.add, operator.lt)
+        result = self.operators[op_symbol](left, right)
+        output_stack.append(result)
 
     def parse_and_evaluate(self, expression: str, filter_data: Dict[str, Union[float, np.ndarray]]) -> Union[float, np.ndarray]:
         """
@@ -2797,8 +2867,6 @@ class FilterArithmeticParser:
         """
         tokens = self.tokenize(expression)
         return self.evaluate(tokens, filter_data)
-
-
 
 def iterate_model_parameters(model_parameters: Dict[str, Dict[str, List[Any]]],
                            model_name: str = None) -> Iterator[Tuple[str, Dict[str, Any]]]:
