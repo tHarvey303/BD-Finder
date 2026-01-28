@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/712418272.svg)](https://doi.org/10.5281/zenodo.18404281)
+
 # BD Fitter
 
 
