@@ -235,6 +235,19 @@ class StarFit:
     def __repr__(self):
         return f"{self.__class__.__name__}({','.join(self.libraries)})"
 
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for key, value in self.__dict__.items():
+            try:
+                setattr(result, key, deepcopy(value, memo))
+            except:
+                print('deepcopy failed for key:', key)
+                breakpoint()
+        return result
+
+
     def param_abrev(self, param, library):
         if library == 'sonora_bobcat':
             vals = {'temp':'t', 'log_g':'g', 'met':'m', 'co':'co'}
