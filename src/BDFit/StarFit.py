@@ -1626,12 +1626,7 @@ class StarFit:
 
             star_tnorm[:, i] = star_tnorm_i
             star_chi2[:, i] = np.sum((fnu * self.zp - _m)**2 * wht_i, axis=1)
-            if i == 1623:
-                print(self.ok_data)
-                print(((fnu[self.ok_data] - _m[self.ok_data])/efnu[self.ok_data])**2)
-                print(np.sum(((fnu[self.ok_data] - _m[self.ok_data])/efnu[self.ok_data])**2))
-                print(star_chi2[:,i])
-
+            
         # Handle NaN rows
         nan_rows = np.all(np.isnan(star_chi2), axis=1)
         star_min_ix = np.full(star_chi2.shape[0], -1, dtype=int)
@@ -1645,9 +1640,6 @@ class StarFit:
             # If all rows are invalid, set everything to NaN
             star_min_chi2 = np.full(star_chi2.shape[0], np.nan)
         
-        print('star_min_chi2', star_min_chi2)
-        print('star_min_ix', star_min_ix)
-
         if subset is None:
             # Avoid division by zero in chi-squared per degree of freedom
             dof = self.nusefilt - 1
