@@ -171,7 +171,8 @@ class StarFit:
         else:
             self.library_path = library_path
 
-        print(f'Library path: {self.library_path}')
+        if verbose:
+            print(f'Library path: {self.library_path}')
 
         if type(libraries) is str:
             libraries = [libraries]
@@ -228,7 +229,8 @@ class StarFit:
 
         self._build_combined_template_grid(libraries)
 
-        print(f'Total models: {len(self.combined_template_grid.T)}')
+        if self.verbose:
+            print(f'Total models: {len(self.combined_template_grid.T)}')
 
     def __repr__(self):
         return f"{self.__class__.__name__}({','.join(self.libraries)})"
@@ -667,7 +669,7 @@ class StarFit:
     def _type_from_temp(self, temp):
         # TODO: This currently does nothing
         # From Sonora Elf Owl
-        temp_range = {'Y':(275, 550), 'T':(575, 1200), 'L':(1300, 2400)}
+        temp_range = {'Y':(275, 550), 'T':(575, 1251), 'L':(1275, 2400)}
 
         for sp_type, (t_min, t_max) in temp_range.items():
             if temp >= t_min and temp <= t_max:
@@ -1063,7 +1065,8 @@ class StarFit:
                     for band in self.model_filters:
                         if band in bands_in_table or band in bands_instruments:
                             if band in filter_wavs.keys():
-                                print(f'Warning! {band} found in multiple instruments. Keeping first, which is {filter_instruments[band]}. Provide instrument.band in dictionary to override this.')
+                                if self.verbose:
+                                    print(f'Warning! {band} found in multiple instruments. Keeping first, which is {filter_instruments[band]}. Provide instrument.band in dictionary to override this.')
 
                             else:
                                 if band in bands_instruments:
@@ -1520,7 +1523,7 @@ class StarFit:
 
         # Chi-squared
         star_chi2 = np.zeros(star_tnorm.shape, dtype=np.float32)
-        for i in tqdm(range(self.NSTAR), desc='Calculating chi2 for all templates...'):
+        for i in tqdm(range(self.NSTAR), desc='Calculating chi2 for all templates...', disable=not self.verbose):
             _m = star_tnorm[:,i:i+1]*star_flux[:,i]
             if subset is None:
                 star_chi2[:,i] = np.sum(
@@ -1577,79 +1580,57 @@ class StarFit:
 
         wave_lim = (self.min_wav, self.max_wav)
 
-        if sys_err is None:
-            sys_err = 0.0
-
+        sys_err = sys_err or 0.0
         star_flux = np.array(template_grid).T
         self.NSTAR = star_flux.shape[1]
 
-        fnu = self.fnu.copy()
-        efnu = self.efnu.copy()
-
+        fnu = self.fnu.copy() if subset is None else self.fnu[subset].copy()
+        efnu = self.efnu.copy() if subset is None else self.efnu[subset].copy()
+        ok_mask = self.ok_data if subset is None else self.ok_data[subset]
+        
         fnu[~self.ok_data] = -99
         efnu[~self.ok_data] = -99
 
-        # Create a weight array
-        if subset is None:
-            _wht = 1/(efnu**2+(sys_err*fnu)**2)
-            _wht /= self.zp**2
-            _wht[(~self.ok_data) | (self.efnu <= 0)] = 0
-        else:
-            _wht = 1.0 / (
-                efnu[subset,:]**2 + (sys_err * fnu[subset,:])**2
-            )
-            _wht /= self.zp**2
-            _wht[(~self.ok_data[subset,:]) | (self.efnu[subset,:] <= 0)] = 0
+        # Base weights (unmasked by templates)
+        _base_wht = 1.0 / (efnu**2 + (sys_err * fnu)**2)
+        _base_wht /= self.zp**2
+        _base_wht[(~ok_mask) | (efnu <= 0)] = 0.0
 
-        # Create a mask for template fluxes if provided
-        template_mask = None
-        if filter_mask is not None:
-            if filter_mask.shape != template_grid.shape:
-                raise ValueError("filter_mask must have the same shape as template_grid")
-
-            # Transpose to match star_flux orientation
-            template_mask = filter_mask.T
-
-            # Apply template mask to weights
-            if subset is None:
-                # Broadcasting the mask to match _wht shape
-                for i in range(star_flux.shape[1]):
-                    _wht[:, template_mask[:, i] == 0] = 0
-            else:
-                # For subset, apply carefully to maintain dimensions
-                for i in range(star_flux.shape[1]):
-                    _wht[template_mask[:, i] == 0] = 0
-
-        # Calculate normalization factors
-        if subset is None:
-            _num = np.dot(fnu * self.zp * _wht, star_flux)
-        else:
-            _num = np.dot(fnu[subset,:] * self.zp * _wht, star_flux)
-
-        _den = np.dot(1*_wht, star_flux**2)
-
-        # Avoid division by zero
-        _den[_den == 0] = np.nan  # Use NaN instead of 0 to properly identify invalid normalizations
-        star_tnorm = _num/_den
-
-        #print(np.shape(_wht), np.shape(filter_mask), np.shape(template_grid), np.shape(star_flux), np.shape(_num))
+        template_mask = filter_mask.T if filter_mask is not None else None
+        star_chi2 = np.zeros((fnu.shape[0], self.NSTAR), dtype=np.float32)
 
         # Chi-squared calculation
-        star_chi2 = np.zeros(star_tnorm.shape, dtype=np.float32)
-        for i in tqdm(range(self.NSTAR), desc='Calculating chi2 for all templates...'):
-            if np.isnan(star_tnorm[:, i]).all():
+        star_chi2 = np.zeros((fnu.shape[0], self.NSTAR), dtype=np.float32)
+        star_tnorm = np.zeros((fnu.shape[0], self.NSTAR), dtype=np.float32)
+
+        for i in tqdm(range(self.NSTAR), desc='Calculating chi2 for all templates...', disable=not self.verbose):
+            wht_i = _base_wht.copy()
+            # Apply template-specific mask safely
+            if template_mask is not None:
+                wht_i[:, template_mask[:, i] == 0] = 0.0
+
+            # Compute normalizations for this specific template
+            num_i = np.sum(fnu * self.zp * wht_i * star_flux[:, i], axis=1)
+            den_i = np.sum(wht_i * star_flux[:, i]**2, axis=1)
+
+            # Safe division
+            valid_den = den_i > 0
+            star_tnorm_i = np.full(den_i.shape, np.nan)
+            star_tnorm_i[valid_den] = num_i[valid_den] / den_i[valid_den]
+
+            if np.isnan(star_tnorm_i).all():
                 star_chi2[:, i] = np.nan
                 continue
 
-            _m = star_tnorm[:,i:i+1]*star_flux[:,i]
-            if subset is None:
-                star_chi2[:,i] = np.sum(
-                    (fnu * self.zp - _m)**2 * _wht
-                , axis=1)
-            else:
-                star_chi2[:,i] = np.sum(
-                    (fnu[subset,:] * self.zp - _m)**2 * _wht
-                , axis=1)
+            _m = star_tnorm_i[:, np.newaxis] * star_flux[:, i]
+
+            star_tnorm[:, i] = star_tnorm_i
+            star_chi2[:, i] = np.sum((fnu * self.zp - _m)**2 * wht_i, axis=1)
+            if i == 1623:
+                print(self.ok_data)
+                print(((fnu[self.ok_data] - _m[self.ok_data])/efnu[self.ok_data])**2)
+                print(np.sum(((fnu[self.ok_data] - _m[self.ok_data])/efnu[self.ok_data])**2))
+                print(star_chi2[:,i])
 
         # Handle NaN rows
         nan_rows = np.all(np.isnan(star_chi2), axis=1)
@@ -1663,6 +1644,9 @@ class StarFit:
         else:
             # If all rows are invalid, set everything to NaN
             star_min_chi2 = np.full(star_chi2.shape[0], np.nan)
+        
+        print('star_min_chi2', star_min_chi2)
+        print('star_min_ix', star_min_ix)
 
         if subset is None:
             # Avoid division by zero in chi-squared per degree of freedom
@@ -1702,7 +1686,7 @@ class StarFit:
 
         return result
 
-    def _catalogue_mask_bands(self, bands, library):
+    def _catalogue_mask_bands(self, bands, library, zero_below_min_wav=True):
         ''' 
 
         Makes a 2D mask for the template grid to avoid fitting bands which fully or partially fall outside the wavelength range of the library.
@@ -1710,6 +1694,8 @@ class StarFit:
         grid = []
         for pos, name in enumerate(self.template_names[library]):
             min_wav, max_wav = self.template_ranges[library][pos]
+            if zero_below_min_wav:
+                min_wav = 0
             fitted_bands = np.array([True if self.filter_wavs[band] >= min_wav and self.filter_wavs[band] <= max_wav else False for band in bands])
             grid.append(fitted_bands)
 
@@ -1728,7 +1714,7 @@ class StarFit:
                 catalogue_ids=None,
                 dump_fit_results=False,
                 dump_fit_results_path='fit_results.pkl',
-                outside_wav_range_behaviour='clip'):
+                flux_below_template_range_behaviour='zero'):
         '''
         Photometry function should be a function that returns the fluxes and flux errors to be fit. Or directly provide the fluxes and errors.
 
@@ -1758,11 +1744,11 @@ class StarFit:
             Whether to dump the fit results to a pickle file. The default is False.
         dump_fit_results_path : str, optional
             Path to dump the fit results. The default is 'fit_results.pkl'.
-        outside_wav_range_behaviour : str, optional
-            Behaviour for when the wavelength range of the bands to fit is outside the wavelength range of the library. The options
-            are either 'clip' to exlude bands or 'subset' to only fit the bands that are within the library wavelength range. The default is 'clip'.
-
-
+        flux_below_template_range_behaviour : str, optional
+            Behaviour for fluxes in bands which fall below the minimum wavelength of the library for
+            that template. Options are 'clip' (don't fit bands below the minimum wavelength), 
+            or 'zero' (assume template flux below the minimum wavelength is zero, which can help 
+            constrain fits for very low temperature templates). The default is 'zero'.
         '''
 
         assert photometry_function is not None or (fnu is not None and efnu is not None), 'Provide either a photometry function or fluxes and errors.'
@@ -1803,6 +1789,7 @@ class StarFit:
         phot_bands = []
         band_idx = []
         band_compar_dict = {}
+        to_remove = []
         for band in bands:
             if band not in self.model_filters:
                 # check all filters in split_model_filters are unique
@@ -1815,7 +1802,8 @@ class StarFit:
                         raise Exception(f'Band {band} is in internal filter dictionary more than once. Please provide the full filter name. E.g. ACS_WFC.F814W')
                     match_idx = split_model_filters.index(band)
                     full_band = self.model_filters[match_idx]
-                    print(f'Warning! Assuming {band} is the same as {full_band}')
+                    if self.verbose:
+                        print(f'Warning! Assuming {band} is the same as {full_band}')
                     self.filter_wavs[band] = self.filter_wavs[full_band]
                     self.filter_ranges[band] = self.filter_ranges[full_band]
                     self.filter_instruments[band] = self.filter_instruments[full_band]
@@ -1824,9 +1812,9 @@ class StarFit:
                     fitted_bands.append(full_band)
                     band_idx.append(match_idx)
                 else:
-
+                    
                     print(f'Warning! Band {band} not in model_filters. Removing from bands to fit.')
-                    bands.remove(band)
+                    to_remove.append(band)
             else:
                 phot_bands.append(band)
                 fitted_bands.append(band)
@@ -1834,6 +1822,11 @@ class StarFit:
                 #print(f'Found {band}')
                 band_idx.append(self.model_filters.index(band))
 
+        if len(to_remove) > 0:
+            if self.verbose:
+                print(f'Removing {to_remove} from bands to fit.')
+            for band in to_remove:
+                bands.remove(band)
         '''
         min_wav, max_wav = self.wavelength_range_of_bands(fitted_bands)
         check_band_ranges = False
@@ -1876,7 +1869,8 @@ class StarFit:
 
         grid = self._build_combined_template_grid(libraries_to_fit)
 
-        print(f'Fitting with {", ".join(libraries_to_fit)} libraries with {np.shape(grid)[1]} templates.')
+        if self.verbose:
+            print(f'Fitting with {", ".join(libraries_to_fit)} libraries with {np.shape(grid)[1]} templates.')
 
         mask = np.array([i in fitted_bands for i in self.model_filters])
         # Check actual bands are in the same order as self.model_filters
@@ -1896,12 +1890,13 @@ class StarFit:
 
         total_filter_mask = np.ones_like(self.reduced_template_grid, dtype=bool)
         for library in libraries_to_fit:
-            filter_mask = self._catalogue_mask_bands(self.bands_to_fit, library)
+            filter_mask = self._catalogue_mask_bands(self.bands_to_fit, library, zero_below_min_wav=(flux_below_template_range_behaviour=='zero'))
             total_filter_mask[self.idx_ranges[library][0]:self.idx_ranges[library][1], :] = filter_mask
 
         self.total_filter_mask = total_filter_mask
 
-        print(f'Fitting {len(fitted_bands)} bands: {fitted_bands}')
+        if self.verbose:
+            print(f'Fitting {len(fitted_bands)} bands: {fitted_bands}')
 
         # Generate ok_data to mask nan fluxes and nan errors
 
@@ -2145,6 +2140,10 @@ class StarFit:
             },
             dtype = [str, str, float, float, float] + meta_dtypes + list(np.full(phot.shape[1], float)),
         )
+
+        if self.catalogue_ids is not None:
+            tab['input_id'] = self.catalogue_ids
+
         meta = {
             "scaling_factor": self.default_scaling_factor,
             "library_path": self.library_path,
@@ -2184,6 +2183,7 @@ class StarFit:
                 enumerate(libraries),
                 desc = f"Loading best fit SEDs for {repr(self)}",
                 total = len(libraries),
+                disable = not self.verbose,
             ):
                 if library != "":
                     libraries_IDs[library].extend([IDs[idx]])
