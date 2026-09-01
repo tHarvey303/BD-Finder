@@ -43,7 +43,58 @@ file_urls={'sonora_bobcat':["https://zenodo.org/records/5063476/files/spectra_m+
                             'https://zenodo.org/records/10385821/files/output_1000.0_1200.tar.gz?download=1', 'https://zenodo.org/records/10385821/files/output_575.0_650.tar.gz?download=1', 'https://zenodo.org/records/10385821/files/output_850.0_950.tar.gz?download=1', 'https://zenodo.org/records/10385821/files/output_700.0_800.tar.gz?download=1', # T-type
                             'https://zenodo.org/records/10381250/files/output_275.0_325.0.tar.gz?download=1', 'https://zenodo.org/records/10381250/files/output_350.0_400.0.tar.gz?download=1', 'https://zenodo.org/records/10381250/files/output_425.0_475.0.tar.gz?download=1', 'https://zenodo.org/records/10381250/files/output_500.0_550.0.tar.gz?download=1'], #L-type
            'low-z':['https://dataverse.harvard.edu/api/access/datafile/4571308', 'https://dataverse.harvard.edu/api/access/datafile/4570758'],
-           'ATMO2020':['https://perso.ens-lyon.fr/isabelle.baraffe/ATMO2020/ATMO_2020_models.tar.gz']}
+           'ATMO2020':['https://perso.ens-lyon.fr/isabelle.baraffe/ATMO2020/ATMO_2020_models.tar.gz'],
+           'PHOENIX':['https://zenodo.org/records/17674612/files/FeH+0.5_alpha+0.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH+1.0_alpha+0.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.0_alpha+0.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.0_alpha+0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.0_alpha+0.4_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.0_alpha+0.6_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.0_alpha+0.8_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.0_alpha+1.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.0_alpha+1.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.0_alpha-0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.5_alpha+0.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.5_alpha+0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.5_alpha+0.4_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.5_alpha+0.6_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.5_alpha+0.8_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.5_alpha+1.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.5_alpha+1.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-0.5_alpha-0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.0_alpha+0.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.0_alpha+0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.0_alpha+0.4_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.0_alpha+0.6_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.0_alpha+0.8_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.0_alpha+1.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.0_alpha+1.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.0_alpha-0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.5_alpha+0.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.5_alpha+0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.5_alpha+0.4_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.5_alpha+0.6_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.5_alpha+0.8_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.5_alpha+1.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.5_alpha+1.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-1.5_alpha-0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-2.0_alpha+0.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-2.0_alpha+0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-2.0_alpha+0.4_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-2.0_alpha+0.6_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-2.0_alpha+0.8_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-2.0_alpha+1.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-2.0_alpha+1.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-2.0_alpha-0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-3.0_alpha+0.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-3.0_alpha+0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-3.0_alpha+0.4_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-3.0_alpha+0.6_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-3.0_alpha+0.8_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-3.0_alpha+1.0_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-3.0_alpha+1.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-3.0_alpha-0.2_phoenixMedRes_R05000.zip?download=1',
+                      'https://zenodo.org/records/17674612/files/FeH-4.0_alpha+0.0_phoenixMedRes_R05000.zip?download=1']}
 
 evolution_tables = {'sonora_bobcat':["https://zenodo.org/records/5063476/files/evolution_and_photometery.tar.gz?download=1"],
                     'sonora_diamondback':['https://zenodo.org/records/12735103/files/evolution.zip?download=1']}
@@ -54,7 +105,8 @@ model_wavelength_ranges = {'sonora_elf_owl':(0.6, 15),
                             'sonora_bobcat':(0.4, 50),
                             'sonora_cholla':(0.3, 250),
                             'low-z':(0.1, 99),
-                            'ATMO2020':(0.2, 100)}
+                            'ATMO2020':(0.2, 100),
+                            'PHOENIX':(0.3, 2.5)}
 # Euclid bands
 # "Y", "Blue", "J", "Red", "H", "vis"
 # Euclid - NISP
@@ -94,11 +146,23 @@ model_parameters = {'sonora_bobcat':{
             #'kzz':[10, 9, 8, 7, 6, 5, 4, 2],
             'kzz_type':['none', 'weak', 'strong'],
         },
+        # PHOENIX synthetic stellar spectra (Husser et al. 2013), medium-resolution reprocessing:
+        # https://zenodo.org/records/17674612. This is a stellar (not sub-stellar) atmosphere grid,
+        # useful as a contaminant library (stars vs high-z galaxy candidates), not a brown dwarf model.
+        # The grid is not fully rectangular (e.g. alpha enhancement and the full temp/log_g range are
+        # only available for a subset of metallicities), so combinations are generated as the full outer
+        # product here and missing files are skipped during conversion, as is already done for 'low-z'/'ATMO2020'.
+        'PHOENIX':{
+            'temp':list(range(2300, 7001, 100)) + list(range(7200, 12001, 200)),
+            'log_g':[round(0.5 * i, 1) for i in range(13)],
+            'met':['-4.0', '-3.0', '-2.0', '-1.5', '-1.0', '-0.5', '-0.0', '+0.5', '+1.0'],
+            'alpha':['-0.2', '+0.0', '+0.2', '+0.4', '+0.6', '+0.8', '+1.0', '+1.2'],
+        },
 }
 
 
 
-model_param_names = ["temp", "log_g", "kzz", "met", "co", "f", 'kzz_type']
+model_param_names = ["temp", "log_g", "kzz", "met", "co", "f", 'kzz_type', 'alpha']
 model_param_dtypes = {
     "temp": float,
     "log_g": float,
@@ -107,6 +171,7 @@ model_param_dtypes = {
     "co": str,
     "f": str,
     'kzz_type': str,
+    'alpha': str,
 }
 
 # elf owl
@@ -142,6 +207,8 @@ class StarFit:
             Path to the model libraries. Default is 'models/'.
         libraries : list
             List of model libraries to compile. Default is ["sonora_bobcat", "sonora_cholla", "sonora_elf_owl", 'sonora_diamondback'].
+            'PHOENIX' (synthetic stellar, not sub-stellar, spectra; useful as a star/contaminant library) is also
+            supported but not included by default, since it is a ~9GB download not needed for brown dwarf fitting.
         compile_bands : list
             List of bands to compile the models for. Default is 'default', which uses the default_bands.
         parameter_overrides : dict
@@ -730,17 +797,27 @@ class StarFit:
             files = glob.glob(new_path+'*.tar.gz') + glob.glob(new_path+'*.zip')
 
             for file in files:
-                out_dir = file[:-7]
-                if not Path(out_dir+'/').is_dir():
-                    if file.endswith('.zip'):
-                        with zipfile.ZipFile(file, 'r') as zip_ref:
+                if library == 'PHOENIX':
+                    # PHOENIX ships as ~50 small zips (one per [Fe/H]/[alpha/M] combination), each
+                    # containing uniquely-named spectra. Extract them all flat into new_path rather
+                    # than into a separate out_dir per zip (unlike the single-archive libraries below).
+                    out_dir = new_path.rstrip('/')
+                    with zipfile.ZipFile(file, 'r') as zip_ref:
+                        first_member = zip_ref.namelist()[0]
+                        if not Path(f'{out_dir}/{first_member}').is_file():
                             zip_ref.extractall(out_dir)
-                    elif file.endswith('.tar.gz'):
-                        tar = tarfile.open(file)
-                        # extracting file
-                        os.makedirs(out_dir+'/', exist_ok=True)
-                        tar.extractall(out_dir)
-                        tar.close()
+                else:
+                    out_dir = file[:-7]
+                    if not Path(out_dir+'/').is_dir():
+                        if file.endswith('.zip'):
+                            with zipfile.ZipFile(file, 'r') as zip_ref:
+                                zip_ref.extractall(out_dir)
+                        elif file.endswith('.tar.gz'):
+                            tar = tarfile.open(file)
+                            # extracting file
+                            os.makedirs(out_dir+'/', exist_ok=True)
+                            tar.extractall(out_dir)
+                            tar.close()
 
                 enclosed_files = glob.glob(out_dir+'/*') + glob.glob(out_dir+'/*/*')
                 for file in enclosed_files:
@@ -1154,16 +1231,16 @@ class StarFit:
         return self.model_parameters[model_version]
 
     def model_file_extensions(self, model_version='sonora_bobcat'):
-        model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt', 'ATMO2020':'.txt'}
+        model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt', 'ATMO2020':'.txt', 'PHOENIX':'.txt'}
 
         return model_ext[model_version]
 
     def _latex_label(self, param):
-        self.latex_labels = { 'temp': r'$T_{\rm eff}$', 'log_g': r'$\log g$', 'met': r'$\rm [Fe/H]$', 'kzz': r'$\rm K_{zz}$', 'co': r'$\rm C/O$', 'f':r'$\rm fsed', 'kzz_type': 'Kzz Model: ', 'model': 'Evo. Model: '}
+        self.latex_labels = { 'temp': r'$T_{\rm eff}$', 'log_g': r'$\log g$', 'met': r'$\rm [Fe/H]$', 'kzz': r'$\rm K_{zz}$', 'co': r'$\rm C/O$', 'f':r'$\rm fsed', 'kzz_type': 'Kzz Model: ', 'model': 'Evo. Model: ', 'alpha': r'$\rm [\alpha/M]$'}
         return self.latex_labels[param]
 
     def param_unit(self, param):
-        self.units = {'temp': u.K, 'log_g': u.cm/u.s**2, 'met': u.dimensionless_unscaled, 'kzz': u.dimensionless_unscaled, 'co': u.dimensionless_unscaled, 'f':u.dimensionless_unscaled, 'kzz_type': u.dimensionless_unscaled}
+        self.units = {'temp': u.K, 'log_g': u.cm/u.s**2, 'met': u.dimensionless_unscaled, 'kzz': u.dimensionless_unscaled, 'co': u.dimensionless_unscaled, 'f':u.dimensionless_unscaled, 'kzz_type': u.dimensionless_unscaled, 'alpha': u.dimensionless_unscaled}
         return self.units[param]
 
     def convert_templates(self, out_folder='sonora_model/', model_version='bobcat', overwrite=False):
@@ -1365,6 +1442,29 @@ class StarFit:
                         if not result:
                             continue
 
+                elif model_version == 'PHOENIX':
+                    met = params['met']
+                    alpha = params['alpha']
+
+                    # Extracted flat by setup_libraries (see comment there); files are uniquely named
+                    # across the whole grid so no per-[Fe/H]/[alpha/M] subfolder is needed.
+                    path = f'{self.library_path}/{model_version}/'
+                    name = f'LTE_T{int(temp):05d}_logg{float(log_g):.2f}_FeH{met}_alpha{alpha}_phoenixMedRes_R05000.txt'
+                    name_new = name.replace('.txt', '_resample.dat')
+
+                    if f'{model_version}/resampled/{name_new}' in processed_files:
+                        all_file_names.remove(name)
+                        continue
+
+                    new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
+                    if not Path(new_path).is_file() or overwrite:
+                        result = self._resample_model(f'{path}/{name}', model_version=model_version, meta=params, new_path=new_path)
+                        if result == 'no overlap':
+                            all_file_names.remove(name)
+                            continue
+                        if not result:
+                            continue
+
                 else:
                     raise Exception(f'Unknown model version: {model_version}')
 
@@ -1379,7 +1479,7 @@ class StarFit:
                 if self.verbose:
                     print('Failed to convert:', file)
 
-        if model_version not in ['ATMO2020', 'low-z']:
+        if model_version not in ['ATMO2020', 'low-z', 'PHOENIX']:
             assert len(all_file_names) == 0, f'Failed to convert {len(all_file_names)} models.'
 
     def clear_resampled_models(self, model_version='sonora_bobcat'):
@@ -1413,6 +1513,11 @@ class StarFit:
             elif model_version == 'ATMO2020':
                 table = Table.read(path, format='ascii', data_start=1, header_start=None, guess=False, delimiter=r'\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
                 table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
+            elif model_version == 'PHOENIX':
+                # Two leading '#' comment lines are stripped automatically by the ascii reader.
+                table = Table.read(path, format='ascii', data_start=0, header_start=None, guess=False, delimiter='\t', fast_reader=False, names=['nanometers', 'Flux (erg/cm^2/s/nm)'], units=[u.nm, u.erg/(u.cm**2*u.s*u.nm)])
+                table['microns'] = table['nanometers'].to(u.micron)
+                table['Flux (erg/cm^2/s/Hz)'] = table['Flux (erg/cm^2/s/nm)'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['nanometers'].data*table['nanometers'].unit))
 
         except FileNotFoundError:
             #if self.verbose:
