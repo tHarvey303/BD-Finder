@@ -203,6 +203,9 @@ class StarFit:
         self.template_parameters = {}
         self.template_ranges = {}
         self.scaling_factors = {}
+        # (bands, library, zero_below_min_wav) -> band mask. The mask depends only on
+        # the filter set and the library, so it is identical for every fitted object.
+        self._mask_band_cache = {}
 
         if compile_bands == 'default':
             self.model_filters = default_bands
@@ -1067,7 +1070,7 @@ class StarFit:
                         svo_table = SvoFps.get_filter_list(
                             facility=facility, instrument=instrument
                         )
-                    except Exception as e:
+                    except FileNotFoundError as e:
                         print(e)
                         continue
                     bands_in_table = [
@@ -1499,7 +1502,8 @@ class StarFit:
 
         # Least squares normalization of stellar templates
         if subset is None:
-            _wht = 1/(efnu**2+(sys_err*fnu)**2)
+            # sys_error is used only where fnu is positive (like in EAZY)
+            _wht = 1/(efnu**2+(sys_err**np.maximum(fnu, 0.))**2)
 
             _wht /= self.zp**2
             _wht[(~self.ok_data) | (self.efnu <= 0)] = 0
@@ -1692,19 +1696,35 @@ class StarFit:
         return result
 
     def _catalogue_mask_bands(self, bands, library, zero_below_min_wav=True):
-        ''' 
+        '''
 
         Makes a 2D mask for the template grid to avoid fitting bands which fully or partially fall outside the wavelength range of the library.
         '''
-        grid = []
-        for pos, name in enumerate(self.template_names[library]):
-            min_wav, max_wav = self.template_ranges[library][pos]
-            if zero_below_min_wav:
-                min_wav = 0
-            fitted_bands = np.array([True if self.filter_wavs[band] >= min_wav and self.filter_wavs[band] <= max_wav else False for band in bands])
-            grid.append(fitted_bands)
+        # Comparing scalar Quantities in a per-template/per-band loop costs ~10 us
+        # each once unit conversion is included, which for a 10k-template library is
+        # tens of seconds per fitted object. Strip the units once and broadcast.
+        cache = self.__dict__.setdefault('_mask_band_cache', {})
+        key = (tuple(bands), library, bool(zero_below_min_wav))
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
 
-        return np.array(grid, dtype=bool)
+        ranges = self.template_ranges[library]
+        unit = ranges.unit
+        max_wav = ranges[:, 1].to_value(unit)
+        if zero_below_min_wav:
+            min_wav = np.zeros_like(max_wav)
+        else:
+            min_wav = ranges[:, 0].to_value(unit)
+
+        band_wavs = np.array([self.filter_wavs[band].to_value(unit) for band in bands])
+
+        grid = (band_wavs[None, :] >= min_wav[:, None]) & (
+            band_wavs[None, :] <= max_wav[:, None]
+        )
+
+        cache[key] = grid
+        return grid
 
     def fit_catalog(self,
                 photometry_function: Callable = None,
