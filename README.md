@@ -20,6 +20,10 @@ Sonora Elf Owl ([Y-Type](https://zenodo.org/records/10381250), [T-Type](https://
 
 [ATMO2020](https://perso.ens-lyon.fr/isabelle.baraffe/ATMO2020/) ([Paper](https://www.aanda.org/articles/aa/full_html/2020/05/aa37381-19/aa37381-19.html))
 
+An optional PHOENIX synthetic stellar (not sub-stellar) library is also supported, for use as a star/contaminant template set rather than for brown dwarf fitting itself. It is not included by default (`StarFit(libraries=['PHOENIX'])` to opt in) since it is a ~9GB download.
+
+[PHOENIX](https://zenodo.org/records/17674612) ([Paper](https://doi.org/10.1051/0004-6361/201219058))
+
 Please cite all fitted model papers and repositories DOIs if you use this code, this would not be possible without the hard work of the authors of these models.
 
 ## Installation
