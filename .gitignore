@@ -12,6 +12,7 @@ __pycache__/*
 crop_*
 stamp_*
 *.fits
+*.txt
 galaxies/temp/*.fits
 galaxies/*.fits
 galaxies/*
