@@ -20,7 +20,7 @@ import numpy as np
 import requests
 import spectres
 from astropy.coordinates import Galactocentric, SkyCoord
-from astropy.io import ascii
+from astropy.io import ascii, fits
 from astropy.table import Column, Table
 
 # supress astropy runtime warnings
@@ -106,7 +106,13 @@ model_wavelength_ranges = {'sonora_elf_owl':(0.6, 15),
                             'sonora_cholla':(0.3, 250),
                             'low-z':(0.1, 99),
                             'ATMO2020':(0.2, 100),
-                            'PHOENIX':(0.3, 2.5)}
+                            'PHOENIX':(0.3, 2.5),
+                            # Husser+2013 HiRes: the SAME grid as 'PHOENIX' above, but the
+                            # untruncated 0.05-5.5 um version rather than the 0.3-2.5 um
+                            # medium-resolution reprocessing. Covering IRAC CH1/CH2 is the
+                            # whole point -- it makes the stellar chi2 directly comparable
+                            # to a 12-band EAZY chi2 instead of a 10-band one.
+                            'PHOENIX_HiRes':(0.05, 5.5)}
 # Euclid bands
 # "Y", "Blue", "J", "Red", "H", "vis"
 # Euclid - NISP
@@ -157,6 +163,17 @@ model_parameters = {'sonora_bobcat':{
             'log_g':[round(0.5 * i, 1) for i in range(13)],
             'met':['-4.0', '-3.0', '-2.0', '-1.5', '-1.0', '-0.5', '-0.0', '+0.5', '+1.0'],
             'alpha':['-0.2', '+0.0', '+0.2', '+0.4', '+0.6', '+0.8', '+1.0', '+1.2'],
+        },
+        # Same physical grid as 'PHOENIX', pulled from the Goettingen FTP HiRes tree
+        # (ftp://phoenix.astro.physik.uni-goettingen.de/HiResFITS/). Only the
+        # solar-scaled-alpha metallicity sequence is held locally (9 of the 52
+        # [Fe/H]/[alpha/M] directories, 7,560 spectra, 44 GiB), so alpha is fixed
+        # at +0.0; the alpha-enhanced directories are not downloaded.
+        'PHOENIX_HiRes':{
+            'temp':list(range(2300, 7001, 100)) + list(range(7200, 12001, 200)),
+            'log_g':[round(0.5 * i, 1) for i in range(13)],
+            'met':['-4.0', '-3.0', '-2.0', '-1.5', '-1.0', '-0.5', '-0.0', '+0.5', '+1.0'],
+            'alpha':['+0.0'],
         },
 }
 
@@ -1234,7 +1251,7 @@ class StarFit:
         return self.model_parameters[model_version]
 
     def model_file_extensions(self, model_version='sonora_bobcat'):
-        model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt', 'ATMO2020':'.txt', 'PHOENIX':'.txt'}
+        model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt', 'ATMO2020':'.txt', 'PHOENIX':'.txt', 'PHOENIX_HiRes':'.fits'}
 
         return model_ext[model_version]
 
@@ -1253,7 +1270,7 @@ class StarFit:
         # Count the number of models to convert with extension recurisvely in the file system
         resampled_files = glob.glob(f'{out_folder}/{model_version}/resampled/*_resample.dat', recursive=True)
         all_files = glob.glob(f'{self.library_path}/{model_version}/**/*{model_parameter_ext}', recursive=True)
-        files_to_ignore = ['parameter']
+        files_to_ignore = ['parameter', 'WAVE_']
         all_files = [file for file in all_files if not any([i in file for i in files_to_ignore])]
 
         all_files = [file for file in all_files if '_resample' not in file]
@@ -1445,6 +1462,30 @@ class StarFit:
                         if not result:
                             continue
 
+                elif model_version == 'PHOENIX_HiRes':
+                    met = params['met']
+
+                    # Held flat, like the MedRes 'PHOENIX' library above: the file
+                    # name embeds log g and [Fe/H] with their signs
+                    # (lte03100-4.50-0.0...), so names are unique across the whole
+                    # grid and no per-[Fe/H] subfolder is needed.
+                    path = f'{self.library_path}/{model_version}/'
+                    name = f'lte{int(temp):05d}-{float(log_g):.2f}{met}.PHOENIX-ACES-AGSS-COND-2011-HiRes.fits'
+                    name_new = name.replace('.fits', '_resample.dat')
+
+                    if f'{model_version}/resampled/{name_new}' in processed_files:
+                        all_file_names.remove(name)
+                        continue
+
+                    new_path = f'{out_folder}/{model_version}/resampled/{name_new}'
+                    if not Path(new_path).is_file() or overwrite:
+                        result = self._resample_model(f'{path}/{name}', model_version=model_version, meta=params, new_path=new_path)
+                        if result == 'no overlap':
+                            all_file_names.remove(name)
+                            continue
+                        if not result:
+                            continue
+
                 elif model_version == 'PHOENIX':
                     met = params['met']
                     alpha = params['alpha']
@@ -1482,7 +1523,7 @@ class StarFit:
                 if self.verbose:
                     print('Failed to convert:', file)
 
-        if model_version not in ['ATMO2020', 'low-z', 'PHOENIX']:
+        if model_version not in ['ATMO2020', 'low-z', 'PHOENIX', 'PHOENIX_HiRes']:
             assert len(all_file_names) == 0, f'Failed to convert {len(all_file_names)} models.'
 
     def clear_resampled_models(self, model_version='sonora_bobcat'):
@@ -1516,6 +1557,25 @@ class StarFit:
             elif model_version == 'ATMO2020':
                 table = Table.read(path, format='ascii', data_start=1, header_start=None, guess=False, delimiter=r'\s', fast_reader=False, names=['microns', 'Watt/m2/m'], units=[u.micron, u.watt/(u.m**2*u.m)])
                 table['Flux (erg/cm^2/s/Hz)'] = table['Watt/m2/m'].to(u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(table['microns'].data*table['microns'].unit))
+            elif model_version == 'PHOENIX_HiRes':
+                # Flux-only spectra (BUNIT = erg/s/cm^2/cm) sharing a single
+                # 1,569,128-point wavelength axis in WAVE_*.fits, in vacuum Angstrom.
+                # The wavelength file is read once and cached -- re-reading it per
+                # spectrum would dominate the conversion of 7,560 models.
+                wav_cache = self.__dict__.get('_phoenix_hires_wave')
+                if wav_cache is None:
+                    wave_path = f'{self.library_path}/PHOENIX_HiRes/WAVE_PHOENIX-ACES-AGSS-COND-2011.fits'
+                    wav_cache = np.asarray(fits.getdata(wave_path), dtype=np.float64)
+                    self._phoenix_hires_wave = wav_cache
+                flux_cm = np.asarray(fits.getdata(path), dtype=np.float64)
+                if flux_cm.shape != wav_cache.shape:
+                    raise ValueError(
+                        f'PHOENIX_HiRes wavelength/flux length mismatch for {path}: '
+                        f'{flux_cm.shape} vs {wav_cache.shape}')
+                wav = wav_cache * u.AA
+                flux = (flux_cm * u.erg/u.s/u.cm**2/u.cm).to(
+                    u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(wav))
+                table = Table([wav.to(u.micron), flux], names=['microns', 'Flux (erg/cm^2/s/Hz)'])
             elif model_version == 'PHOENIX':
                 # Two leading '#' comment lines are stripped automatically by the ascii reader.
                 table = Table.read(path, format='ascii', data_start=0, header_start=None, guess=False, delimiter='\t', fast_reader=False, names=['nanometers', 'Flux (erg/cm^2/s/nm)'], units=[u.nm, u.erg/(u.cm**2*u.s*u.nm)])
@@ -1762,24 +1822,16 @@ class StarFit:
             # If all rows are invalid, set everything to NaN
             star_min_chi2 = np.full(star_chi2.shape[0], np.nan)
         
-        if subset is None:
-            # Avoid division by zero in chi-squared per degree of freedom
-            dof = self.nusefilt - 1
-            # Correct DOF for bands which are masked for this template
-            if filter_mask is not None:
-                dof -= np.sum(filter_mask[star_min_ix, :] == 0, axis=1)
-
-
-            dof = np.maximum(dof, 1)  # Ensure we don't divide by zero
-            star_min_chinu = star_min_chi2 / dof
-        else:
-            dof = self.nusefilt[subset] - 1
-
-            if filter_mask is not None:
-                dof -= np.sum(filter_mask[star_min_ix, :] == 0, axis=1)
-
-            dof = np.maximum(dof, 1)  # Ensure we don't divide by zero
-            star_min_chinu = star_min_chi2 / dof
+        # DOF = bands that actually carried weight in the best fit, minus the
+        # normalisation. A band the template doesn't cover only drops out if the
+        # source had data there, so count the overlap rather than subtracting every
+        # template-masked band from nusefilt (which double counts no-data bands).
+        used = ok_mask.copy()
+        if filter_mask is not None:
+            used &= filter_mask[star_min_ix, :] != 0
+        dof = used.sum(axis=1) - 1
+        dof = np.maximum(dof, 1)  # Ensure we don't divide by zero
+        star_min_chinu = star_min_chi2 / dof
 
         if subset is None:
             # Set attributes
