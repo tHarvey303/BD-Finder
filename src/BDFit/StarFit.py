@@ -102,10 +102,19 @@ file_urls={'sonora_bobcat':["https://zenodo.org/records/5063476/files/spectra_m+
 # to download: 'local' marks them for setup_libraries. Templates are stored as F_nu(10 pc) /
 # (R_ref / 10 pc)^2 with R_ref = EMPIRICAL_R_REF_RSUN, i.e. the fitted normalisation gives a
 # DISTANCE through the template's own absolute magnitude instead of a radius.
-# 'empirical_ucd' (field) and 'empirical_ucd_sd' (d/sd, sd, esd subdwarfs) are tied per spectral type
-# to the observed Euclid Q1/DR1 locus of spectroscopically typed dwarfs (Y_E-J_E, J_E-H_E, I_E-H_E);
-# the '_synth' variants are the same spectra before that tying (pure synthetic photometry).
-EMPIRICAL_LIBRARIES = ('empirical_ucd', 'empirical_ucd_sd', 'empirical_ucd_synth', 'empirical_ucd_sd_synth')
+# Three versions of the field ('empirical_ucd*') and subdwarf ('empirical_ucd_sd*') sets:
+#   empirical_ucd[_sd]           spectra tied per spectral type to the observed Euclid Q1/DR1 locus of
+#                                spectroscopically typed dwarfs (Y_E-J_E, J_E-H_E, I_E-H_E), PLUS the IRAC.I1/I2
+#                                band fluxes tied to the DAWN catalogue system (H_E-[3.6], [3.6]-[4.5]); the IRAC
+#                                tie is photometry-only (template meta irac_tie_dch1/2, applied in
+#                                build_template_grid), spectra and all other bands are untouched.
+#   empirical_ucd[_sd]_nisptied  the same spectra, IRAC not tied (synthetic IRAC).
+#   empirical_ucd[_sd]_synth     the spectra before any tying (pure synthetic photometry).
+EMPIRICAL_LIBRARIES = ('empirical_ucd', 'empirical_ucd_sd', 'empirical_ucd_nisptied', 'empirical_ucd_sd_nisptied',
+                       'empirical_ucd_synth', 'empirical_ucd_sd_synth')
+# Photometry-only band ties of the empirical libraries: band -> template meta key holding the magnitude
+# added to that band's synthetic flux (positive = fainter).
+EMPIRICAL_BAND_TIES = {'IRAC.I1': 'irac_tie_dch1', 'IRAC.I2': 'irac_tie_dch2'}
 EMPIRICAL_R_REF_RSUN = 0.1
 for _lib in EMPIRICAL_LIBRARIES:
     file_urls[_lib] = ['local']
@@ -133,7 +142,9 @@ model_wavelength_ranges = {'sonora_elf_owl':(0.6, 15),
                             'empirical_ucd':(0.3, 5.2),
                             'empirical_ucd_sd':(0.3, 5.2),
                             'empirical_ucd_synth':(0.3, 5.2),
-                            'empirical_ucd_sd_synth':(0.3, 5.2)}
+                            'empirical_ucd_sd_synth':(0.3, 5.2),
+                            'empirical_ucd_nisptied':(0.3, 5.2),
+                            'empirical_ucd_sd_nisptied':(0.3, 5.2)}
 # Euclid bands
 # "Y", "Blue", "J", "Red", "H", "vis"
 # Euclid - NISP
@@ -213,6 +224,14 @@ model_parameters = {'sonora_bobcat':{
             'met':['0.0'],
         },
         'empirical_ucd_sd_synth':{
+            'spt':[round(6 + 0.5 * i, 1) for i in range(52)],
+            'met':['sd'],
+        },
+        'empirical_ucd_nisptied':{
+            'spt':[round(6 + 0.5 * i, 1) for i in range(52)],
+            'met':['0.0'],
+        },
+        'empirical_ucd_sd_nisptied':{
             'spt':[round(6 + 0.5 * i, 1) for i in range(52)],
             'met':['sd'],
         },
@@ -1091,6 +1110,7 @@ class StarFit:
 
                     # Calculate fluxes for missing bands only
                     convolved_fluxes = self._convolve_sed(table['flux_njy'], table['wav'].to(u.um), missing_bands, input='flux')
+                    convolved_fluxes = self._apply_empirical_band_ties(model_version, missing_bands, convolved_fluxes, table.meta)
 
                     # Place the new fluxes at the correct positions
                     for j, band_idx in enumerate(missing_band_indices):
@@ -1140,6 +1160,7 @@ class StarFit:
                                 metas[key] = [np.nan]*pos
 
                     convolved_fluxes = [i.value for i in self._convolve_sed(table['flux_njy'], table['wav'].to(u.um), bands, input='flux')]
+                    convolved_fluxes = self._apply_empirical_band_ties(model_version, bands, convolved_fluxes, table.meta)
                     assert len(convolved_fluxes) == len(bands), f'Convolved fluxes and bands are different lengths: {len(convolved_fluxes)} and {len(bands)}'
                     flux_column = Column(convolved_fluxes, name=name, unit=u.nJy)
 
@@ -1350,7 +1371,8 @@ class StarFit:
     def model_file_extensions(self, model_version='sonora_bobcat'):
         model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt', 'ATMO2020':'.txt', 'PHOENIX':'.txt', 'PHOENIX_HiRes':'.fits',
                      'empirical_ucd':'.ecsv', 'empirical_ucd_sd':'.ecsv',
-                     'empirical_ucd_synth':'.ecsv', 'empirical_ucd_sd_synth':'.ecsv'}
+                     'empirical_ucd_synth':'.ecsv', 'empirical_ucd_sd_synth':'.ecsv',
+                     'empirical_ucd_nisptied':'.ecsv', 'empirical_ucd_sd_nisptied':'.ecsv'}
 
         return model_ext[model_version]
 
@@ -1627,6 +1649,22 @@ class StarFit:
 
         if model_version not in ['ATMO2020', 'low-z', 'PHOENIX', 'PHOENIX_HiRes']:
             assert len(all_file_names) == 0, f'Failed to convert {len(all_file_names)} models.'
+
+    @staticmethod
+    def _apply_empirical_band_ties(model_version, bands, fluxes, meta):
+        '''Photometry-only band ties of the empirical libraries (EMPIRICAL_BAND_TIES): multiply the
+        synthetic flux of each tied band by 10**(-0.4 * meta[key]). Used for the DAWN-catalogue IRAC
+        system tie of empirical_ucd[_sd]; a no-op for every other library or when the key is absent.'''
+        if model_version not in EMPIRICAL_LIBRARIES:
+            return fluxes
+        out = list(fluxes)
+        for i, band in enumerate(bands):
+            key = EMPIRICAL_BAND_TIES.get(band)
+            if key is not None and key in meta:
+                dmag = float(meta[key])
+                if np.isfinite(dmag) and dmag != 0.0:
+                    out[i] = out[i] * 10 ** (-0.4 * dmag)
+        return out
 
     def _convert_empirical_templates(self, out_folder, model_version, overwrite=False):
         '''Resample the shipped empirical spectra (models/<lib>/spectra/<name>.ecsv, wav in

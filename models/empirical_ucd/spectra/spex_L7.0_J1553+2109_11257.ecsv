@@ -30,9 +30,12 @@
 # - {irac_recal_dch1: 0.3766}
 # - {irac_recal_dch2: 0.8789}
 # - {locus_tied: true}
+# - {irac_tied: true}
 # - {locus_dYJ: -0.2349}
 # - {locus_dJH: -0.2042}
 # - {locus_dIH: -0.7844}
+# - {irac_tie_dch1: 1.0007}
+# - {irac_tie_dch2: 1.1034}
 # - {r_ref_rsun: 0.1}
 # schema: astropy-2.0
 wav flux_nu

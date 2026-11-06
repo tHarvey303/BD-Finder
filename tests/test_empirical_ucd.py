@@ -63,3 +63,17 @@ def test_fit_synthetic_dwarf(sf):
     assert summary['best_template'][0] == sf.template_names[lib][j]
     assert summary['spt_lo'][0] <= params['spt'][j] <= summary['spt_hi'][0]
     assert np.isfinite(summary['chi2_marg'][0])
+
+
+def test_irac_tie_is_photometry_only():
+    """empirical_ucd carries the DAWN-catalogue IRAC tie on IRAC.I1/I2 only; the spectra (and so
+    every other band) are those of empirical_ucd_nisptied."""
+    sf2 = StarFit(libraries=['empirical_ucd', 'empirical_ucd_nisptied'], library_path=LIB_PATH)
+    g, g0 = sf2.template_grids['empirical_ucd'], sf2.template_grids['empirical_ucd_nisptied']
+    bands = sf2.template_bands['empirical_ucd']
+    dch1 = np.asarray(sf2.template_parameters['empirical_ucd']['irac_tie_dch1'], float)
+    for j, band in enumerate(bands):
+        if band == 'IRAC.I1':
+            np.testing.assert_allclose(g[j], g0[j] * 10 ** (-0.4 * dch1), rtol=1e-5)
+        elif band != 'IRAC.I2':
+            np.testing.assert_allclose(g[j], g0[j], rtol=1e-6)
