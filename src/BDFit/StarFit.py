@@ -96,6 +96,20 @@ file_urls={'sonora_bobcat':["https://zenodo.org/records/5063476/files/spectra_m+
                       'https://zenodo.org/records/17674612/files/FeH-3.0_alpha-0.2_phoenixMedRes_R05000.zip?download=1',
                       'https://zenodo.org/records/17674612/files/FeH-4.0_alpha+0.0_phoenixMedRes_R05000.zip?download=1']}
 
+# Empirical ultracool-dwarf libraries (one template per observed dwarf, built from SpeX Prism
+# Library and JWST/NIRSpec PRISM spectra; see models/<library>/<library>_provenance.ecsv).
+# Their spectra ship with the repository (models/<library>/spectra/*.ecsv), so there is nothing
+# to download: 'local' marks them for setup_libraries. Templates are stored as F_nu(10 pc) /
+# (R_ref / 10 pc)^2 with R_ref = EMPIRICAL_R_REF_RSUN, i.e. the fitted normalisation gives a
+# DISTANCE through the template's own absolute magnitude instead of a radius.
+# 'empirical_ucd' (field) and 'empirical_ucd_sd' (d/sd, sd, esd subdwarfs) are tied per spectral type
+# to the observed Euclid Q1/DR1 locus of spectroscopically typed dwarfs (Y_E-J_E, J_E-H_E, I_E-H_E);
+# the '_synth' variants are the same spectra before that tying (pure synthetic photometry).
+EMPIRICAL_LIBRARIES = ('empirical_ucd', 'empirical_ucd_sd', 'empirical_ucd_synth', 'empirical_ucd_sd_synth')
+EMPIRICAL_R_REF_RSUN = 0.1
+for _lib in EMPIRICAL_LIBRARIES:
+    file_urls[_lib] = ['local']
+
 evolution_tables = {'sonora_bobcat':["https://zenodo.org/records/5063476/files/evolution_and_photometery.tar.gz?download=1"],
                     'sonora_diamondback':['https://zenodo.org/records/12735103/files/evolution.zip?download=1']}
 
@@ -112,7 +126,14 @@ model_wavelength_ranges = {'sonora_elf_owl':(0.6, 15),
                             # medium-resolution reprocessing. Covering IRAC CH1/CH2 is the
                             # whole point -- it makes the stellar chi2 directly comparable
                             # to a 12-band EAZY chi2 instead of a 10-band one.
-                            'PHOENIX_HiRes':(0.05, 5.5)}
+                            'PHOENIX_HiRes':(0.05, 5.5),
+                            # Empirical UCD templates: 0.30-5.20 um common grid (outside the
+                            # empirical coverage of each spectrum the provenance table records
+                            # the model / JWST extension used).
+                            'empirical_ucd':(0.3, 5.2),
+                            'empirical_ucd_sd':(0.3, 5.2),
+                            'empirical_ucd_synth':(0.3, 5.2),
+                            'empirical_ucd_sd_synth':(0.3, 5.2)}
 # Euclid bands
 # "Y", "Blue", "J", "Red", "H", "vis"
 # Euclid - NISP
@@ -174,6 +195,26 @@ model_parameters = {'sonora_bobcat':{
             'log_g':[round(0.5 * i, 1) for i in range(13)],
             'met':['-4.0', '-3.0', '-2.0', '-1.5', '-1.0', '-0.5', '-0.0', '+0.5', '+1.0'],
             'alpha':['+0.0'],
+        },
+        # Empirical UCD libraries are not parameter grids: one template per observed dwarf.
+        # 'spt' is numeric spectral type (M6=6, L0=10, T0=20, Y0=30); 'met' is '0.0' for field
+        # dwarfs and 'sd' for (mild/extreme) subdwarfs. Listed for model_parameter_ranges only;
+        # conversion reads the shipped spectra directly (_convert_empirical_templates).
+        'empirical_ucd':{
+            'spt':[round(6 + 0.5 * i, 1) for i in range(52)],
+            'met':['0.0'],
+        },
+        'empirical_ucd_sd':{
+            'spt':[round(6 + 0.5 * i, 1) for i in range(52)],
+            'met':['sd'],
+        },
+        'empirical_ucd_synth':{
+            'spt':[round(6 + 0.5 * i, 1) for i in range(52)],
+            'met':['0.0'],
+        },
+        'empirical_ucd_sd_synth':{
+            'spt':[round(6 + 0.5 * i, 1) for i in range(52)],
+            'met':['sd'],
         },
 }
 
@@ -287,6 +328,8 @@ class StarFit:
         self.template_parameters = {}
         self.template_ranges = {}
         self.scaling_factors = {}
+        # r_ref_rsun attribute of empirical libraries (None for model libraries)
+        self.template_r_ref = {}
         # (bands, library, zero_below_min_wav) -> band mask. The mask depends only on
         # the filter set and the library, so it is identical for every fitted object.
         self._mask_band_cache = {}
@@ -672,7 +715,39 @@ class StarFit:
         return results
 
 
+    def _empirical_physical_params(self, idx, norm):
+        '''Distance and spectral type for a template of an empirical library.
+
+        The grid stores F_nu(10 pc) / (R_ref / 10 pc)^2, so the fitted normalisation is
+        norm * scale = (R_ref / d)^2 and d = R_ref / sqrt(norm * scale): a distance through
+        the template's own absolute magnitude (no radius or evolutionary tracks involved).'''
+        library, name = self.get_template_name(idx)
+        params = self.get_template_parameters(idx)
+        r_ref = (self.template_r_ref.get(library) or EMPIRICAL_R_REF_RSUN) * u.Rsun
+        a = float(norm) * float(self.scaling_factors[library])
+        distance = (r_ref / np.sqrt(a)).to(u.pc) if a > 0 else np.nan * u.pc
+        spt = float(params.get('spt', np.nan))
+        results = {'distance': distance, 'spt': spt,
+                   'spt_str': str(params.get('spt_str', self._type_from_spt(spt))),
+                   'met': str(params.get('met', '')),
+                   'template': name, 'mass': None, 'radius': None,
+                   'info': {'library': library, 'r_ref_rsun': r_ref.to_value(u.Rsun)}}
+        for band in ('Y', 'J', 'H'):
+            key = f'abs_mag_{band}'
+            if key in params:
+                results[key] = float(params[key]) * u.ABmag
+        if 'abs_mag_H' in results and np.isfinite(distance.value):
+            results['app_mag_H'] = (results['abs_mag_H'].value + 5 * np.log10(distance.to_value(u.pc) / 10.0)) * u.ABmag
+        return results
+
     def get_physical_params(self, idx, norm):
+        '''Physical parameters for template idx at fitted normalisation norm. Model libraries:
+        mass/radius from evolutionary tables and the implied distance. Empirical libraries
+        (EMPIRICAL_LIBRARIES): spt, spt_str, distance and the template absolute magnitudes
+        (abs_mag_Y/J/H, Euclid AB) plus the implied apparent H (mass/radius are None).'''
+        library, _ = self.get_template_name(idx)
+        if library in EMPIRICAL_LIBRARIES:
+            return self._empirical_physical_params(idx, norm)
         results = self.get_params_from_table(idx)
 
         if 'mass' in results.keys() and 'radius' in results.keys():
@@ -707,6 +782,7 @@ class StarFit:
 
             scale = file.attrs['scale']
             self.scaling_factors[library] = scale
+            self.template_r_ref[library] = float(file.attrs['r_ref_rsun']) if 'r_ref_rsun' in file.attrs else None
 
             if 'meta' in file:
                 if library not in self.template_parameters.keys():
@@ -766,6 +842,16 @@ class StarFit:
 
         return self.combined_template_grid
 
+    @staticmethod
+    def _type_from_spt(spt):
+        '''Spectral-type string from the numeric code used by the empirical libraries
+        (M6=6, L0=10, T0=20, Y0=30), e.g. 15.5 -> 'L5.5'.'''
+        spt = float(spt)
+        if not np.isfinite(spt):
+            return ''
+        letter = 'M' if spt < 10 else ('L' if spt < 20 else ('T' if spt < 30 else 'Y'))
+        return f"{letter}{spt - {'M': 0, 'L': 10, 'T': 20, 'Y': 30}[letter]:.1f}"
+
     def _type_from_temp(self, temp):
         # TODO: This currently does nothing
         # From Sonora Elf Owl
@@ -781,6 +867,12 @@ class StarFit:
             new_path = path + f"/{library}/"
 
             os.makedirs(new_path, exist_ok=True)
+
+            if list(urls.get(library, [])) == ['local']:
+                # Shipped with the repository (e.g. the empirical UCD libraries): nothing to fetch.
+                if not glob.glob(f"{new_path}/spectra/*.ecsv"):
+                    print(f'{library} is a local library but {new_path}spectra/ holds no spectra.')
+                continue
 
             # Fetch the Zenodo metadata for the given repository URL
             for file_url in urls[library]:
@@ -1014,6 +1106,8 @@ class StarFit:
                     file.create_dataset('template_grid', data=new_template_grid, compression='gzip')
                     file.attrs['bands'] = combined_bands
                     file.attrs['scale'] = scale
+                    if model_version in EMPIRICAL_LIBRARIES:
+                        file.attrs['r_ref_rsun'] = EMPIRICAL_R_REF_RSUN
 
                     file.create_dataset('names', data=names)
 
@@ -1071,6 +1165,9 @@ class StarFit:
                     file.create_dataset('template_grid', data=template_grid, compression='gzip')
                     file.attrs['bands'] = bands
                     file.attrs['scale'] = self.default_scaling_factor
+                    if model_version in EMPIRICAL_LIBRARIES:
+                        # template / scale x (R_ref / d)^2 is the observed flux at distance d
+                        file.attrs['r_ref_rsun'] = EMPIRICAL_R_REF_RSUN
 
                     file.create_dataset('names', data=names)
                     # Stores meta for dataset - temperature, log_g, met, etc. Useful for filtering models, calculating distances, etc.
@@ -1251,19 +1348,24 @@ class StarFit:
         return self.model_parameters[model_version]
 
     def model_file_extensions(self, model_version='sonora_bobcat'):
-        model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt', 'ATMO2020':'.txt', 'PHOENIX':'.txt', 'PHOENIX_HiRes':'.fits'}
+        model_ext = {'sonora_bobcat':'', 'sonora_cholla':'.spec', 'sonora_elf_owl':'.nc', 'sonora_diamondback':'.spec', 'low-z':'.txt', 'ATMO2020':'.txt', 'PHOENIX':'.txt', 'PHOENIX_HiRes':'.fits',
+                     'empirical_ucd':'.ecsv', 'empirical_ucd_sd':'.ecsv',
+                     'empirical_ucd_synth':'.ecsv', 'empirical_ucd_sd_synth':'.ecsv'}
 
         return model_ext[model_version]
 
     def _latex_label(self, param):
-        self.latex_labels = { 'temp': r'$T_{\rm eff}$', 'log_g': r'$\log g$', 'met': r'$\rm [Fe/H]$', 'kzz': r'$\rm K_{zz}$', 'co': r'$\rm C/O$', 'f':r'$\rm fsed', 'kzz_type': 'Kzz Model: ', 'model': 'Evo. Model: ', 'alpha': r'$\rm [\alpha/M]$'}
+        self.latex_labels = { 'temp': r'$T_{\rm eff}$', 'log_g': r'$\log g$', 'met': r'$\rm [Fe/H]$', 'kzz': r'$\rm K_{zz}$', 'co': r'$\rm C/O$', 'f':r'$\rm fsed', 'kzz_type': 'Kzz Model: ', 'model': 'Evo. Model: ', 'alpha': r'$\rm [\alpha/M]$', 'spt': 'SpT'}
         return self.latex_labels[param]
 
     def param_unit(self, param):
-        self.units = {'temp': u.K, 'log_g': u.cm/u.s**2, 'met': u.dimensionless_unscaled, 'kzz': u.dimensionless_unscaled, 'co': u.dimensionless_unscaled, 'f':u.dimensionless_unscaled, 'kzz_type': u.dimensionless_unscaled, 'alpha': u.dimensionless_unscaled}
+        self.units = {'temp': u.K, 'log_g': u.cm/u.s**2, 'met': u.dimensionless_unscaled, 'kzz': u.dimensionless_unscaled, 'co': u.dimensionless_unscaled, 'f':u.dimensionless_unscaled, 'kzz_type': u.dimensionless_unscaled, 'alpha': u.dimensionless_unscaled, 'spt': u.dimensionless_unscaled}
         return self.units[param]
 
     def convert_templates(self, out_folder='sonora_model/', model_version='bobcat', overwrite=False):
+
+        if model_version in EMPIRICAL_LIBRARIES:
+            return self._convert_empirical_templates(out_folder, model_version, overwrite=overwrite)
 
         model_parameter_ext = self.model_file_extensions(model_version)
 
@@ -1526,6 +1628,34 @@ class StarFit:
         if model_version not in ['ATMO2020', 'low-z', 'PHOENIX', 'PHOENIX_HiRes']:
             assert len(all_file_names) == 0, f'Failed to convert {len(all_file_names)} models.'
 
+    def _convert_empirical_templates(self, out_folder, model_version, overwrite=False):
+        '''Resample the shipped empirical spectra (models/<lib>/spectra/<name>.ecsv, wav in
+        Angstrom, flux_nu in erg/s/cm2/Hz with the template metadata in the ECSV header) onto the
+        package wavelength sampling and (re)write <lib>.param. Template order follows the
+        provenance table models/<lib>/<lib>_provenance.ecsv when present.'''
+        src = f'{self.library_path}/{model_version}/spectra'
+        prov_path = f'{self.library_path}/{model_version}/{model_version}_provenance.ecsv'
+        if os.path.exists(prov_path):
+            names = [str(i) for i in Table.read(prov_path, format='ascii.ecsv')['name']]
+        else:
+            names = sorted(Path(i).stem for i in glob.glob(f'{src}/*.ecsv'))
+        assert len(names) > 0, f'No empirical spectra found in {src}'
+        os.makedirs(f'{out_folder}/{model_version}/resampled/', exist_ok=True)
+        lines = []
+        for name in tqdm(names, desc=f'Converting {model_version} templates', disable=not self.verbose):
+            new_path = f'{out_folder}/{model_version}/resampled/{name}_resample.dat'
+            if overwrite or not Path(new_path).is_file():
+                meta = dict(Table.read(f'{src}/{name}.ecsv', format='ascii.ecsv').meta)
+                result = self._resample_model(f'{src}/{name}.ecsv', model_version=model_version, meta=meta, new_path=new_path)
+                assert result is True, f'Failed to resample {name}: {result}'
+            lines.append(f'{model_version}/resampled/{name}_resample.dat\n')
+        with open(f'{out_folder}/{model_version}.param', 'w') as f:
+            # build_template_grid reads .param files with Table.read(format='ascii', names=['path']),
+            # which consumes the first line as a header row, so write an explicit header line
+            # (the model-library .param files lose their first template this way).
+            f.write('path\n')
+            f.writelines(lines)
+
     def clear_resampled_models(self, model_version='sonora_bobcat'):
         model_file_ext = self.model_file_extensions(model_version)
         resampled_files = glob.glob(f'{self.library_path}/{model_version}/**/*_resample.dat', recursive=True)
@@ -1576,6 +1706,12 @@ class StarFit:
                 flux = (flux_cm * u.erg/u.s/u.cm**2/u.cm).to(
                     u.erg/(u.cm**2*u.s*u.Hz), equivalencies=u.spectral_density(wav))
                 table = Table([wav.to(u.micron), flux], names=['microns', 'Flux (erg/cm^2/s/Hz)'])
+            elif model_version in EMPIRICAL_LIBRARIES:
+                # Already F_nu on a log grid (see _convert_empirical_templates).
+                raw = Table.read(path, format='ascii.ecsv')
+                wav = raw['wav'].quantity.to(u.micron)
+                flux = raw['flux_nu'].quantity.to(u.erg/(u.cm**2*u.s*u.Hz))
+                table = Table([wav, flux], names=['microns', 'Flux (erg/cm^2/s/Hz)'])
             elif model_version == 'PHOENIX':
                 # Two leading '#' comment lines are stripped automatically by the ascii reader.
                 table = Table.read(path, format='ascii', data_start=0, header_start=None, guess=False, delimiter='\t', fast_reader=False, names=['nanometers', 'Flux (erg/cm^2/s/nm)'], units=[u.nm, u.erg/(u.cm**2*u.s*u.nm)])
@@ -2115,6 +2251,95 @@ class StarFit:
                 pickle.dump(dump_dict, f, protocol=5) # Efficient binary protocol for large files
 
         return fit_results
+
+    def empirical_ucd_summary(self, library='empirical_ucd', distance_prior='none', d_max_pc=None,
+                              delta_chi2=1.0):
+        '''Optional per-object summary over the templates of one empirical UCD library
+        (run fit_catalog first; the library must be part of the fit).
+
+        For object i and template j the fit gives chi2_ij (profiled over the normalisation)
+        and a distance d_ij = R_ref / sqrt(norm_ij * scale). Template weights are
+        w_ij = exp(-(chi2_ij - min_j chi2_ij) / 2) * p(d_ij), with p(d) = 1 ('none') or
+        p(d) proportional to d^2 ('volume', uniform space density), and p = 0 beyond d_max_pc.
+
+        Returns an astropy Table with, per object:
+          best_template, best_spt, best_spt_str, best_met, best_chi2, best_distance_pc,
+          best_abs_mag_H     -- the minimum-chi2 template;
+          spt_lo, spt_hi     -- range of SpT among templates with chi2 <= min + delta_chi2;
+          spt_mean, spt_std  -- weighted mean / std of SpT;
+          distance_pc_med    -- weighted median distance;
+          chi2_marg          -- -2 ln[ sum_j w'_ij exp(-chi2_ij / 2) ], w' the prior weights
+                                normalised to sum to 1 over templates with finite chi2 (a
+                                template-marginalised chi2, profile likelihood in the scale);
+          n_templates        -- templates with a finite chi2.
+        Existing outputs (star_min_ix etc.) are not changed.
+        '''
+        assert hasattr(self, 'star_chi2'), 'Fit the catalogue first.'
+        assert library in self.idx_ranges, f'{library} was not part of the fit.'
+        lo, hi = self.idx_ranges[library]
+        chi2 = np.asarray(self.star_chi2[:, lo:hi], dtype=float)
+        norm = np.asarray(self.star_tnorm[:, lo:hi], dtype=float)
+        params = self.template_parameters[library]
+        spt = np.asarray(params['spt'], dtype=float)
+        absH = np.asarray(params.get('abs_mag_H', np.full(len(spt), np.nan)), dtype=float)
+        met = np.asarray([str(i) for i in params.get('met', [''] * len(spt))])
+        names = np.asarray(self.template_names[library])
+        r_ref_cm = (self.template_r_ref.get(library) or EMPIRICAL_R_REF_RSUN) * u.Rsun.to(u.cm)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            d_pc = r_ref_cm / np.sqrt(norm * self.scaling_factors[library]) / u.pc.to(u.cm)
+        good = np.isfinite(chi2) & np.isfinite(d_pc) & (norm > 0)
+        chi2 = np.where(good, chi2, np.inf)
+        if distance_prior == 'none':
+            prior = np.where(good, 1.0, 0.0)
+        elif distance_prior == 'volume':
+            prior = np.where(good, d_pc ** 2, 0.0)
+        else:
+            raise ValueError("distance_prior must be 'none' or 'volume'")
+        if d_max_pc is not None:
+            prior = np.where(d_pc <= d_max_pc, prior, 0.0)
+        psum = prior.sum(axis=1, keepdims=True)
+        prior_n = np.where(psum > 0, prior / np.where(psum > 0, psum, 1.0), 0.0)
+        cmin = np.min(chi2, axis=1)
+        ok = np.isfinite(cmin)
+        rel = np.exp(-0.5 * (chi2 - np.where(ok, cmin, 0.0)[:, None]))
+        w = rel * prior_n
+        wsum = w.sum(axis=1)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            chi2_marg = np.where(ok & (wsum > 0), cmin - 2 * np.log(wsum), np.nan)
+            wn = w / np.where(wsum > 0, wsum, np.nan)[:, None]
+            spt_mean = np.nansum(wn * spt[None, :], axis=1)
+            spt_std = np.sqrt(np.nansum(wn * (spt[None, :] - spt_mean[:, None]) ** 2, axis=1))
+        best = np.argmin(chi2, axis=1)
+        rows = np.arange(len(best))
+        within = chi2 <= (cmin + delta_chi2)[:, None]
+        spt_lo = np.where(ok, np.min(np.where(within, spt[None, :], np.inf), axis=1), np.nan)
+        spt_hi = np.where(ok, np.max(np.where(within, spt[None, :], -np.inf), axis=1), np.nan)
+        d_med = np.full(len(best), np.nan)
+        for i in np.where(ok & (wsum > 0))[0]:
+            o = np.argsort(d_pc[i])
+            c = np.cumsum(np.nan_to_num(wn[i, o]))
+            d_med[i] = d_pc[i, o][np.searchsorted(c, 0.5)]
+        out = Table()
+        if getattr(self, 'catalogue_ids', None) is not None:
+            out['id'] = self.catalogue_ids
+        out['best_template'] = np.where(ok, names[best], '')
+        out['best_spt'] = np.where(ok, spt[best], np.nan)
+        out['best_spt_str'] = [self._type_from_spt(i) for i in out['best_spt']]
+        out['best_met'] = np.where(ok, met[best], '')
+        out['best_chi2'] = np.where(ok, cmin, np.nan)
+        out['best_distance_pc'] = np.where(ok, d_pc[rows, best], np.nan)
+        out['best_abs_mag_H'] = np.where(ok, absH[best], np.nan)
+        out['spt_lo'] = spt_lo
+        out['spt_hi'] = spt_hi
+        out['spt_mean'] = np.where(ok, spt_mean, np.nan)
+        out['spt_std'] = np.where(ok, spt_std, np.nan)
+        out['distance_pc_med'] = d_med
+        out['chi2_marg'] = chi2_marg
+        out['n_templates'] = good.sum(axis=1)
+        out.meta['library'] = library
+        out.meta['distance_prior'] = distance_prior
+        out.meta['d_max_pc'] = d_max_pc
+        return out
 
     def get_catalog_physical_params(self):
         assert hasattr(self, 'star_tnorm'), 'Fit the catalogue first.'
